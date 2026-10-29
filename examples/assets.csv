@@ -1,0 +1,3 @@
+id,name,type,account,currency,value,asOf,inPool,emergency,earmarked,equityRatio,quantity,unit,issuer,notional,available,direction,restricted
+example-cash,现金示例,cash,虚构账户,CNY,55000,2026-10-22,true,0,0,,,,,,,long,false
+example-stock,股票示例,stock,虚构账户,CNY,45000,2026-10-22,true,0,0,,1000,股,示例发行人,,,long,false

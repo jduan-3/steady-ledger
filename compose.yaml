@@ -1,0 +1,11 @@
+name: balance-finance
+services:
+  balance:
+    build: .
+    ports:
+      - "127.0.0.1:3210:3210"
+    volumes:
+      - balance-data:/app/data
+    restart: unless-stopped
+volumes:
+  balance-data:

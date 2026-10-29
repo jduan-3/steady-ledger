@@ -1,0 +1,4 @@
+id,name,type,currency,value,asOf,inPool,insuranceKind,valuationBasis,sumAssured,paidPremiums,accessibleValue,premiumAmount,premiumFrequency,premiumInExpenses,nextPremiumDate,equityRatio
+example-savings,虚构储蓄保险,insurance,CNY,80000,2026-10-23,false,savings,cash_value,1000000,100000,60000,12000,yearly,false,2026-11-01,
+example-term,虚构保障保险,insurance,CNY,0,2026-10-23,false,protection,cash_value,1000000,3000,0,3000,yearly,true,2027-01-01,
+example-unitlinked,虚构投连险,insurance,CNY,50000,2026-10-23,false,investment,account_value,,60000,,,paid_up,true,,

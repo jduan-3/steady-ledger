@@ -1,0 +1,2 @@
+id,name,type,currency,balance,payment,rate,investment,overdue,maturity
+example-debt,贷款示例,mortgage,CNY,1000000,12000,,false,false,

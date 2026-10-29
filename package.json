@@ -1,0 +1,25 @@
+{
+  "name": "steady-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Steady Ledger — 自托管的个人账本、持仓与 AI 财务助手",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "local": "node src/local.mjs",
+    "preview": "node src/preview.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check src/server.mjs && node --check src/domain.mjs && node --check src/store.mjs && node --check src/income.mjs && node --check src/ai.mjs && node --check src/assistant-runs.mjs && node --check src/assistant-data.mjs && node --check src/ledger.mjs && node --check src/market.mjs && node --check src/instrument-details.mjs && node --check src/funds.mjs && node --check src/tencent.mjs && node --check src/markets.mjs && node --check src/market-briefs.mjs && node --check src/market-summary.mjs && node --check src/buffett.mjs && node --check src/market-context.mjs && node --check src/market-access.mjs && node --check src/budget.mjs && node --check public/markets.js && node --check public/app.js",
+    "check:public": "node scripts/check-public-files.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "typebox": "1.3.27"
+  }
+}
