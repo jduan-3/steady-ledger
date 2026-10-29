@@ -8,13 +8,15 @@ import { applyInvestmentInfo } from '../src/investments.mjs';
 import { applyStockPrices } from '../src/market.mjs';
 import { readEventStream } from '../public/sse.js';
 import { marketPageHTML,marketBriefsHTML } from '../public/markets.js';
+import { monthlyPageHTML } from '../public/monthly-performance.js';
+import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from '../public/watchboard.js';
 
 // Pure rendering/event tests over local source; no browser or running page access.
 function componentHarness(fetch) {
   const nodes=new Map(),listeners={};
   const node=()=>({innerHTML:'',textContent:'',classList:{add(){},remove(){}},addEventListener(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});
   class Form {constructor(id,fields){this.actualId=id;this.id={name:'id'};this.fields=fields;} getAttribute(){return this.actualId;} querySelectorAll(){return [];} }
-  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,setTimeout:()=>0,clearTimeout(){}});
+  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,setTimeout:()=>0,clearTimeout(){}});
   vm.runInContext(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/\nstart\(\);\s*$/,''),context);
   const state=validateState(initialState());
   context.fixture={state,metrics:calculate(state),rules:evaluate(state),history:[],reports:[],messages:[],audit:[],config:{baseUrl:'',model:'',consent:false}};
@@ -474,4 +476,33 @@ test('股票市场与搜索组合，切到其他资产不受市场限制，清�
  await click({action:'clear-asset-search'});assert.equal(h.run('stockMarketFilter'),'HK');assert.equal(h.run('filteredAssets().length'),2);
  await click({action:'asset-filter',filter:'fund'});assert.equal(h.run('filteredAssets()[0].id'),'fund');assert.equal(h.run('stockMarketFiltersHTML()'),'');
  await click({action:'clear-asset-filters'});assert.equal(h.run('stockMarketFilter'),'all');assert.equal(h.run('assetFilter'),'all');assert.equal(h.run('filteredAssets().length'),4);
+});
+
+test('clicking the US market label opens its overview and toggles the child without a separate disclosure button',async()=>{
+  const h=componentHarness();h.run("location.hash='#dashboard';marketAttempted.US=true;render();");
+  let html=h.nodes.get('#app').innerHTML;
+  assert.match(html,/id="us-market-pages"[^>]*hidden/);assert.ok(!html.includes('nav-disclosure'));
+  assert.match(html,/<a href="#us-market"[^>]*data-action="toggle-us-market"[^>]*aria-expanded="false"/);
+  let prevented=0;
+  const click=()=>h.listeners.click({preventDefault(){prevented++;},target:{closest:()=>({dataset:{action:'toggle-us-market'}})}});
+  await click();assert.equal(h.run('location.hash'),'us-market');h.run("location.hash='#us-market';render();");
+  html=h.nodes.get('#app').innerHTML;assert.match(html,/aria-expanded="true"/);assert.ok(!html.match(/id="us-market-pages"[^>]*hidden/));assert.equal(h.run('route'),'us-market');
+  await click();assert.equal(prevented,2);assert.match(h.nodes.get('#app').innerHTML,/id="us-market-pages"[^>]*hidden/);
+  h.run("location.hash='#us-monthly';monthlyAttempted=true;render();");
+  html=h.nodes.get('#app').innerHTML;assert.match(html,/aria-expanded="true"/);assert.match(html,/href="#us-monthly"[^>]*class="active"[^>]*aria-current="page"/);
+});
+
+test('US watch cards share the collapsed market navigation and retain search when switching between current and close views',async()=>{
+  let requests=0;
+  const h=componentHarness(async(_url,options)=>{requests++;return {ok:true,json:async()=>({...h.context.boardFixture,mode:JSON.parse(options.body).mode})};});
+  const q={date:'2026-10-28',time:'2026-10-28 16:00:01',price:110,previous:{price:100},percent:10,source:'Synthetic'};
+  h.context.boardFixture={groups:[{id:'popular',title:'热门关注',keys:['US.MSFT','US.AAPL']}],items:[{key:'US.MSFT',symbol:'MSFT',name:'微软',latest:q,close:{...q,date:'2026-10-27',percent:-2}},{key:'US.AAPL',symbol:'AAPL',name:'苹果',latest:q,close:{...q,date:'2026-10-27',percent:-1}}],total:2};
+  h.run("location.hash='#us-quotes';watchboardView=boardFixture;watchboardAttempted.add('latest');render();");
+  let html=h.nodes.get('#app').innerHTML;assert.match(html,/href="#us-quotes"[^>]*class="active"/);assert.match(html,/href="#us-monthly"/);assert.match(html,/aria-expanded="true"/);assert.match(html,/<h1>美股行情/);
+  h.listeners.input({target:{value:'苹果',closest:()=>null,matches:selector=>selector==='#watchboard-search'}});
+  assert.match(h.nodes.get('#watchboard-results').innerHTML,/US.AAPL/);assert.ok(!h.nodes.get('#watchboard-results').innerHTML.includes('US.MSFT'));
+  await h.listeners.click({target:{closest:()=>({dataset:{action:'watchboard-mode',mode:'close'}})}});
+  assert.equal(requests,1);assert.equal(h.run('watchboardMode'),'close');assert.equal(h.run('watchboardQuery'),'苹果');assert.match(h.nodes.get('#app').innerHTML,/−1.0%/);
+  await h.listeners.click({target:{closest:()=>({dataset:{action:'watchboard-quote',key:'US.AAPL'}})}});
+  assert.match(h.nodes.get('#dialog').innerHTML,/最近收盘/);assert.match(h.nodes.get('#dialog').innerHTML,/Synthetic/);
 });

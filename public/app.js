@@ -1,5 +1,7 @@
 import { readEventStream } from './sse.js';
 import { marketPageHTML, marketBriefsHTML } from './markets.js';
+import { monthlyPageHTML } from './monthly-performance.js';
+import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from './watchboard.js';
 
 function adviceText(value) {
   return String(value??'').replace(/\r\n?/g,'\n')
@@ -88,6 +90,38 @@ async function preserveChatView(value) {
   return value;
 }
 let selectedTrendDay='',trendRange='recent',assetQuery='',stockMarketFilter='all',reportBusy=false,navCollapsed=false;
+const usMarketPages=[['us-monthly','chart','纳指月度表现'],['us-quotes','chart','美股行情']];
+const allRoutes=[...routes,...usMarketPages];
+let usMarketExpanded=false,renderedRoute='';
+function navigationHTML(){
+  return routes.map(([r,,label])=>{
+    const link=`<a href="#${r}" data-route="${r}" ${r==='us-market'?`data-action="toggle-us-market" aria-controls="us-market-pages" aria-expanded="${usMarketExpanded}"`: ""} class="${r===route?'active':''}" ${r===route?'aria-current="page"':''}>${label}</a>`;
+    if(r!=='us-market')return (r==='settings'?'<span class="nav-spacer"></span>':'')+link;
+    return `<div class="nav-market-group">${link}<div id="us-market-pages" class="nav-submenu" ${usMarketExpanded?'':'hidden'}>${usMarketPages.map(([r,,label])=>`<a href="#${r}" data-route="${r}" class="${route===r?'active':''}" ${route===r?'aria-current="page"':''}>${label}</a>`).join('')}</div></div>`;
+  }).join('');
+}
+let monthlyView=null,monthlyBusy=false,monthlyAttempted=false,monthlyError='',monthlySelected='';
+async function loadMonthly(force=false){
+  if(monthlyBusy)return;
+  monthlyBusy=true;monthlyAttempted=true;monthlyError='';if(route==='us-monthly')render();
+  try{
+    if(!monthlyView){monthlyView=await api('/markets/monthly');if(route==='us-monthly')render();}
+    monthlyView=await api('/markets/monthly/refresh',{method:'POST',body:{force}});
+  }catch(error){monthlyError=error.message;}
+  finally{monthlyBusy=false;if(route==='us-monthly')render();}
+}
+let watchboardView=null,watchboardBusy=false,watchboardMode='latest',watchboardQuery='',watchboardError='';
+const watchboardAttempted=new Set();
+function paintWatchboard(){const results=$('#watchboard-results');if(results)results.innerHTML=watchboardGroupsHTML(watchboardView,{mode:watchboardMode,query:watchboardQuery});}
+async function loadWatchboard(){
+  if(watchboardBusy)return;
+  watchboardBusy=true;watchboardError='';watchboardAttempted.add(watchboardMode);if(route==='us-quotes')render();
+  try{
+    if(!watchboardView){watchboardView=await api('/markets/watchboard?mode='+watchboardMode);if(route==='us-quotes')render();}
+    watchboardView=await api('/markets/watchboard/refresh',{method:'POST',body:{mode:watchboardMode}});
+  }catch(error){watchboardError=error.message;}
+  finally{watchboardBusy=false;if(route==='us-quotes')render();}
+}
 const revealedAmounts=new Set();
 function privateAmount(key,value,label,{hero=false,format=money}={}) {
   if(value==null)return money(value);
@@ -204,9 +238,12 @@ function renderAuth() {
 function render() {
   const briefPanel=$('.market-archive[data-market]'),briefMarket=briefPanel?.dataset?.market;
   if(marketSelections[briefMarket])marketSelections[briefMarket].briefOpen=briefPanel.open;
-  route = location.hash.slice(1).split('?')[0] || 'dashboard'; if (!routes.some(r=>r[0]===route)) route='dashboard';
+  route = location.hash.slice(1).split('?')[0] || 'dashboard'; if (!allRoutes.some(r=>r[0]===route)) route='dashboard';
+  if(usMarketPages.some(([r])=>r===route)&&renderedRoute!==route)usMarketExpanded=true;renderedRoute=route;
   if (!auth?.authenticated || !data) return;
-  $('#app').innerHTML = `<div class="workspace${navCollapsed?' nav-collapsed':''}"><aside id="main-sidebar" class="sidebar"><nav class="nav" aria-label="主导航">${routes.map(([r,,label])=>`${r==='settings'?'<span class="nav-spacer"></span>':''}<a href="#${r}" data-route="${r}" class="${r===route?'active':''}" ${r===route?'aria-current="page"':''}>${label}</a>`).join('')}<button class="mobile-nav-more ${['us-market','hk-market','reports','settings'].includes(route)?'active':''}" data-action="more-pages" aria-haspopup="dialog" aria-label="更多页面">更多</button></nav><div class="sidebar-bottom workspace-status">${auth.preview?'本机访问':'已登录'}</div></aside><div class="app-main"><header class="topbar"><div class="workspace-breadcrumb"><button class="text-btn workspace-toggle" data-action="toggle-sidebar" aria-controls="main-sidebar" aria-expanded="${!navCollapsed}">${navCollapsed?'显示导航':'收起导航'}</button><span class="breadcrumb-divider">/</span><span>${routes.find(([r])=>r===route)?.[2]}</span></div><div class="workspace-toolbar"><span>${new Intl.DateTimeFormat('zh-CN',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(new Date())}</span><button class="text-btn" data-action="account">数据与备份</button></div></header><main class="content${route==='assistant'?' content-assistant':''}">${data.state.isDemo ? `<div class="demo-banner"><span>演示数据，均为虚构金额。</span><button data-action="reset">清空并开始记账</button></div>`:''}${({dashboard:dashboard,assets:assetsPage,cashflow:cashflowPage,assistant:assistantPage,reports:reportsPage,settings:settingsPage,'us-market':()=>marketPage('US'),'hk-market':()=>marketPage('HK')}[route])()}</main></div></div>`;
+  $('#app').innerHTML = `<div class="workspace${navCollapsed?' nav-collapsed':''}"><aside id="main-sidebar" class="sidebar"><nav class="nav" aria-label="主导航">${navigationHTML()}<button class="mobile-nav-more ${['us-market','hk-market','reports','settings'].includes(route)?'active':''}" data-action="more-pages" aria-haspopup="dialog" aria-label="更多页面">更多</button></nav><div class="sidebar-bottom workspace-status">${auth.preview?'本机访问':'已登录'}</div></aside><div class="app-main"><header class="topbar"><div class="workspace-breadcrumb"><button class="text-btn workspace-toggle" data-action="toggle-sidebar" aria-controls="main-sidebar" aria-expanded="${!navCollapsed}">${navCollapsed?'显示导航':'收起导航'}</button><span class="breadcrumb-divider">/</span><span>${usMarketPages.some(([r])=>r===route)?'美国市场 / ':''}${allRoutes.find(([r])=>r===route)?.[2]}</span></div><div class="workspace-toolbar"><span>${new Intl.DateTimeFormat('zh-CN',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(new Date())}</span><button class="text-btn" data-action="account">数据与备份</button></div></header><main class="content${route==='assistant'?' content-assistant':''}">${data.state.isDemo ? `<div class="demo-banner"><span>演示数据，均为虚构金额。</span><button data-action="reset">清空并开始记账</button></div>`:''}${({dashboard:dashboard,assets:assetsPage,cashflow:cashflowPage,assistant:assistantPage,reports:reportsPage,settings:settingsPage,'us-quotes':()=>watchboardPageHTML(watchboardView,{mode:watchboardMode,query:watchboardQuery,loading:watchboardBusy,error:watchboardError}),'us-monthly':()=>monthlyPageHTML(monthlyView,{loading:monthlyBusy,error:monthlyError,selectedPeriod:monthlySelected}),'us-market':()=>marketPage('US'),'hk-market':()=>marketPage('HK')}[route])()}</main></div></div>`;
+  if(route==='us-monthly'&&!monthlyAttempted)void loadMonthly();
+  if(route==='us-quotes'&&!watchboardAttempted.has(watchboardMode))void loadWatchboard();
   restoreFormDrafts();
   if (route==='assistant') { const chat=$('#chat-messages'); chat.scrollTop=chat.scrollHeight; fitChatInput(); }
   const market=currentMarket();if(market&&!marketViews[market]&&!marketBusy[market]&&!marketAttempted[market])loadMarket(market);
@@ -740,6 +777,14 @@ document.addEventListener('click',async event=>{
       render();$(`[data-amount-key="${key}"]`)?.focus?.();return;
     }
     if(action==='generate-market-brief'){const result=await api('/market-briefs/generate',{method:'POST',body:{market:target.dataset.market}});applyMarketBriefs(result);pollMarketBriefs();return toast('市场简报正在生成');}
+    if(action==='toggle-us-market'){event.preventDefault();usMarketExpanded=!usMarketExpanded;return routeTo('us-market');}
+    if(action==='watchboard-mode'){if(watchboardBusy||!['latest','close'].includes(target.dataset.mode))return;watchboardMode=target.dataset.mode;return loadWatchboard();}
+    if(action==='refresh-watchboard')return loadWatchboard();
+    if(action==='clear-watchboard-query'){watchboardQuery='';$('#watchboard-search').value='';paintWatchboard();$('#watchboard-search')?.focus?.();return;}
+    if(action==='watchboard-quote'){const item=watchboardView?.items.find(i=>i.key===target.dataset.key);if(item)showDialog(item.name,item.symbol+' · 行情详情',watchboardQuoteHTML(item,{mode:watchboardMode}));return;}
+    if(action==='copy-watchboard'){await navigator.clipboard.writeText(watchboardCopyText(watchboardView,{mode:watchboardMode,query:watchboardQuery}));return toast('行情已复制');}
+    if(action==='refresh-monthly')return loadMonthly(true);
+    if(action==='monthly-cell'){monthlySelected=target.dataset.period;render();$(`[data-period="${monthlySelected}"]`)?.focus?.();return;}
     if(action==='refresh-markets')return loadMarket(currentMarket(),true);
     if(action==='market-series'){marketSelections[currentMarket()]={seriesKey:target.dataset.key};return render();}
     if(action==='market-point'){marketSelections[currentMarket()].selectedDate=target.dataset.date;return render();}
@@ -818,7 +863,7 @@ document.addEventListener('click',async event=>{
     if(action==='logout'){await api('/auth/logout',{method:'POST',body:{}});auth.authenticated=false;formDrafts.clear();renderAuth();return;}
   }catch(e){toast(e.message);if(target.isConnected)target.disabled=false;}
 });
-document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
+document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
   if(event.target.matches('[data-history-date]')){selectHistoryDate(event.target.value);$('[data-history-date]')?.focus?.();return;}
@@ -913,5 +958,5 @@ document.addEventListener('submit',async event=>{
 });
 $('#dialog').addEventListener('click',event=>{if(event.target===$('#dialog')){const r=$('#dialog').getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDialog();}});
 window.addEventListener('hashchange',()=>{render();window.scrollTo(0,0);});
-async function start(){try{auth=await api('/auth/status');if(!auth.authenticated)return renderAuth();data=await api('/bootstrap');render();if(data.chatRun?.status==='running'){chatRunId=data.chatRun.id;chatRequestId=data.chatRun.requestId;void resumeChat();}if(data.marketBriefs?.latest.some(b=>b.ai?.status==='generating'))pollMarketBriefs();setInterval(async()=>{if(document.visibilityState==='hidden'||$('#dialog').open||chatBusy||document.activeElement?.matches('input,textarea,select'))return;if(currentMarket()){await loadMarket(currentMarket(),false,true);return;}if(!['dashboard','assets','reports'].includes(route))return;try{await refresh();}catch{}},60000);}catch(e){$('#app').innerHTML=`<div class="loading"><p>暂时无法打开财务空间</p><p style="font-size:12px;margin-top:12px">${esc(e.message)}</p><button class="btn btn-secondary" style="margin-top:18px" data-action="retry-start">重新连接</button></div>`;}}
+async function start(){try{auth=await api('/auth/status');if(!auth.authenticated)return renderAuth();data=await api('/bootstrap');render();if(data.chatRun?.status==='running'){chatRunId=data.chatRun.id;chatRequestId=data.chatRun.requestId;void resumeChat();}if(data.marketBriefs?.latest.some(b=>b.ai?.status==='generating'))pollMarketBriefs();setInterval(async()=>{if(document.visibilityState==='hidden'||$('#dialog').open||chatBusy||document.activeElement?.matches('input,textarea,select'))return;if(route==='us-quotes'){await loadWatchboard();return;}if(currentMarket()){await loadMarket(currentMarket(),false,true);return;}if(!['dashboard','assets','reports'].includes(route))return;try{await refresh();}catch{}},60000);}catch(e){$('#app').innerHTML=`<div class="loading"><p>暂时无法打开财务空间</p><p style="font-size:12px;margin-top:12px">${esc(e.message)}</p><button class="btn btn-secondary" style="margin-top:18px" data-action="retry-start">重新连接</button></div>`;}}
 start();

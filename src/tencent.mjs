@@ -24,7 +24,7 @@ export function parseTencentQuote(text, key){
   if(actual!==s.symbol || f.length<33)throw new Error('股票身份不匹配');
   let time=f[30].replaceAll('/','-');
   if(/^\d{14}$/.test(time))time=time.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/,'$1-$2-$3 $4:$5:$6');
-  return {key:s.key,price:Number(f[3]),previous:{price:Number(f[4])},time,source:'腾讯证券公开行情'};
+  return {key:s.key,price:Number(f[3]),previous:{price:Number(f[4])},time,...(market==='US'?{historyCode:'us'+String(f[2]).toUpperCase()}:{}),source:'腾讯证券公开行情'};
 }
 export async function tencentQuotes(keys,{fetchImpl=fetch}={}){
   const codes=keys.map(key=>{const s=securityKey(key);if(!prefixes[s.market])throw new Error();return prefixes[s.market]+s.symbol;});

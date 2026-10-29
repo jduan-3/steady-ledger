@@ -337,3 +337,28 @@ test('开启当前对话上下文后可接着原对话聊，关闭后仍可查�
  await request('/config','PUT',config);await request('/chat','POST',{message:'关闭上下文后的独立问题',conversationId:first.conversation.id});
  assert.ok(!JSON.stringify(upstream.calls.at(-1)).includes('本对话的用钱目的'));assert.equal((await request('/conversations?id='+first.conversation.id)).body.messages.length,6);
 });
+
+test('monthly public-market data requires login, serves the local component, and does not change portfolio state',async t=>{
+  const {request,app,base}=await setup(t);
+  assert.equal((await request('/markets/monthly')).status,401);assert.equal((await request('/markets/monthly/refresh','POST',{})).status,401);
+  await request('/auth/setup','POST',{password:'synthetic-password-only'});
+  const revision=app.store.state().revision;
+  const empty=(await request('/markets/monthly')).body;assert.equal(empty.rows.length,3);assert.equal(empty.completedSamples,0);
+  const current=new Date(),period=current.toISOString().slice(0,7);
+  app.store.setKV('nasdaq_monthly',{attemptedAt:current.toISOString(),updatedAt:current.toISOString(),points:[{period,date:current.toISOString().slice(0,10),close:100,complete:false}]});
+  const cached=await request('/markets/monthly/refresh','POST',{});assert.equal(cached.status,200);assert.equal(cached.body.symbol,'IXIC');assert.equal(app.store.state().revision,revision);
+  const component=await fetch(base+'/monthly-performance.js');assert.equal(component.status,200);assert.match(await component.text(),/monthlyPageHTML/);
+});
+
+test('watchboard APIs require authentication, validate modes and serve local logos without expanding external script access',async t=>{
+  const {app,request,base}=await setup(t);
+  assert.equal((await request('/markets/watchboard')).status,401);assert.equal((await request('/markets/watchboard/refresh','POST',{mode:'latest'})).status,401);
+  await request('/auth/setup','POST',{password:'synthetic-password-only'});
+  const revision=app.store.state().revision;
+  let result=await request('/markets/watchboard?mode=close');assert.equal(result.status,200);assert.equal(result.body.mode,'close');assert.equal(result.body.total,116);assert.equal(result.body.available,0);
+  assert.equal((await request('/markets/watchboard?mode=extended')).status,400);assert.equal((await request('/markets/watchboard/refresh','POST',{mode:'extended'})).status,400);
+  app.store.setKV('us_watchboard',{attemptedAt:{latest:new Date().toISOString()}});
+  result=await request('/markets/watchboard/refresh','POST',{mode:'latest'});assert.equal(result.status,200);assert.equal(app.store.state().revision,revision);
+  for(const path of ['/watchboard.js','/watchboard-logos.js','/logos/apple.svg','/logos/LICENSE.txt']){const r=await fetch(base+path);assert.equal(r.status,200);assert.match(r.headers.get('content-security-policy'),/script-src 'self'/);await r.body.cancel();}
+  assert.equal((await fetch(base+'/logos/missing.svg')).status,404);assert.equal((await fetch(base+'/logos/%2e%2e%2fsrc%2fstore.mjs')).status,404);
+});
