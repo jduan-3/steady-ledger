@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { createApplication } from '../src/server.mjs';
 import { readEventStream } from '../public/sse.js';
+import { createLedgerService } from '../src/ledger.mjs';
 
 async function setup(t,options={}) {
   const dir=mkdtempSync(join(tmpdir(),'balance-test-')),app=createApplication({dataDir:dir,disableAuth:false,schedule:false,...options});
@@ -14,6 +15,22 @@ async function setup(t,options={}) {
   const request=async(path,method='GET',body,extra={})=>{const res=await fetch(base+'/api'+path,{method,headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...extra},...(body!==undefined?{body:JSON.stringify(body)}:{})});if(res.headers.get('set-cookie'))cookie=res.headers.get('set-cookie').split(';')[0];return {status:res.status,body:await res.json()};};
   return {app,request,base,dir};
 }
+
+test('清空接口原子取消旧待入账；价格披露后不能重新写入空档案',async t=>{
+  const {request,app}=await setup(t,{disableAuth:true}),store=app.store;
+  const now=new Date('2026-10-29T10:00:00Z'),date='2026-10-29';
+  store.saveConfig({baseUrl:'https://example.com',model:'synthetic',consent:true,allowLedgerWrites:true});
+  const service=createLedgerService(store,{clock:()=>now,fundOptions:{fetchImpl:async()=>{throw new Error('offline');}}});
+  const question='我今天用额外投入买入1000元基金006789';
+  const pending=await service.bind({question,requestId:'before-reset',scopeId:store.config().scopeId,startedAt:now.getTime()}).recordHoldingChange({query:'006789',fundCode:'006789',side:'buy',amount:1000,evidence:question});
+  assert.equal(pending.status,'pending');
+  const failed=await request('/reset','POST',{revision:store.state().revision,confirmation:'错误确认'});
+  assert.equal(failed.status,400);assert.equal(store.ledgerEntry(pending.id).status,'pending');assert.equal(store.ledgerGeneration(),0);
+  const cleared=await request('/reset','POST',{revision:store.state().revision,confirmation:'清空财务档案'});
+  assert.equal(cleared.status,200);assert.equal(cleared.body.state.assets.length,0);assert.equal(cleared.body.ledgerEntries[0].status,'cancelled');assert.equal(store.ledgerGeneration(),1);
+  store.setKV('fund_nav:006789',{date,price:2,currency:'CNY',basis:'unit_nav'});await service.processPending();
+  assert.equal((await request('/bootstrap')).body.state.assets.length,0);
+});
 test('首次设置、登录保护、重复导入、旧试算接口移除与版本冲突',async t=>{
   const {request,app}=await setup(t);
   assert.equal((await request('/bootstrap')).status,401);

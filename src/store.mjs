@@ -81,7 +81,8 @@ export function openStore(directory) {
     setKV('state',next);snapshot(project(next),day);
     db.prepare('DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 100)').run();
   };
-  const save = (input, expectedRevision, label = '更新财务档案') => {
+  const ledgerGeneration = () => getKV('ledger_generation',0);
+  const save = (input, expectedRevision, label = '更新财务档案', { reset = false } = {}) => {
     db.exec('BEGIN IMMEDIATE');
     try {
       const current = state({ raw: true });
@@ -92,6 +93,11 @@ export function openStore(directory) {
         if (prev) { a.value = prev.quantity === a.quantity ? prev.value : null; a.asOf = prev.asOf; }
       }
       persistState(next,current,label);
+      if(reset){
+        setKV('ledger_generation',ledgerGeneration()+1);
+        db.prepare("UPDATE ledger_entries SET payload=json_set(payload,'$.status','cancelled','$.message','财务档案已清空，旧待入账记录已取消') WHERE json_extract(payload,'$.status')='pending'").run();
+        setKV('income_credits',[]);
+      }
       db.exec('COMMIT');
       return next;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -122,6 +128,7 @@ export function openStore(directory) {
       if(existing&&existing.signature!==entry.signature)throw new Error('本轮已登记过这项资产的另一笔变动，请另发一条消息记录新变动');
       if(existing&&existing.status!=='pending'){db.exec('COMMIT');return {...existing,replayed:true};}
       let result=existing||entry;
+      if((result.generation??0)!==ledgerGeneration())throw new Error('财务档案已清空，旧记账任务已失效，请重新确认');
       if(transition){
         const current=state({raw:true}),change=transition(structuredClone(current),result);
         if(change.state){const next=validateState(change.state);next.revision=current.revision+1;persistState(next,current,entry.label.slice(0,100));result={...result,...change.receipt,revision:next.revision,status:'applied',appliedAt:new Date().toISOString()};}
@@ -144,7 +151,8 @@ export function openStore(directory) {
   };
   const messages = id => db.prepare('SELECT * FROM messages'+(id?' WHERE conversation_id=?':'')+' ORDER BY created_at,rowid').all(...(id?[id]:[])).map(m=>({...m,metadata:JSON.parse(m.metadata)}));
   return {
-    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,ledgerEntry,ledgerEntries,postLedgerEntry,
+    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,ledgerEntry,ledgerEntries,postLedgerEntry,ledgerGeneration,
+    reset(expectedRevision){return save(initialState(),expectedRevision,'清空财务档案（可从历史恢复）',{reset:true});},
     cancelLedgerEntry(id){const entry=ledgerEntry(id);if(!entry||entry.status!=='pending')throw new Error('只能取消尚未入账的记录');return postLedgerEntry(entry,()=>({receipt:{status:'cancelled'}}));},
     audit: () => db.prepare('SELECT id,created_at,label FROM audit ORDER BY id DESC LIMIT 20').all(),
     undo: (id, revision) => { const row = db.prepare('SELECT state FROM audit WHERE id=?').get(id); if (!row) throw new Error('找不到该历史版本'); return save(JSON.parse(row.state), revision, '恢复历史版本'); },

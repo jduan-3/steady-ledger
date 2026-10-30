@@ -11,6 +11,19 @@ const reply=message=>Response.json({choices:[{finish_reason:message.tool_calls?'
 const tool=()=>reply({content:null,reasoning_content:'OPAQUE_CONTINUATION',tool_calls:[{id:'market-read',type:'function',function:{name:'get_market_data',arguments:'{"market":"HK"}'}}]});
 async function within(promise){return Promise.race([promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('Test stalled')),5000);timer.unref();})]);}
 
+test('清空后即使进程重启也不恢复旧代号的持久任务或旧版无代号任务',async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'finance-durable-reset-')),store=openStore(dir);store.saveConfig(config);
+ const thread=store.createConversation(store.config().scopeId,'旧任务');store.reset(store.state().revision);
+ const runtime=createAssistantRuns(store,{dataDir:dir,services:()=>({})});let calls=0;
+ t.after(async()=>{await runtime.close();store.close();rmSync(dir,{recursive:true,force:true});});
+ t.mock.method(globalThis,'fetch',async()=>{calls++;return reply({content:'不应生成'});});
+ for(const extra of [{ledgerGeneration:0},{}]){
+   store.setKV('assistant_active_run',{id:'00000000-0000-4000-8000-000000000001',requestId:'old-reset-request',scopeId:store.config().scopeId,conversationId:thread.id,question:'旧任务',status:'running',snapshot:store.state(),history:[],startedAt:Date.now(),...extra});
+   assert.equal(await runtime.resume(),null);assert.equal(store.getKV('assistant_active_run'),null);
+ }
+ assert.equal(calls,0);assert.equal(store.messages().length,0);assert.equal(store.state().assets.length,0);
+});
+
 test('重开持久会话接着完成工具之后的模型请求，不重算已完成的工具，也不重复保存回答',async t=>{
  const dir=mkdtempSync(join(tmpdir(),'finance-durable-'));let store=openStore(dir);store.saveConfig(config);
  let runtime,calls=0,toolCalls=0,reached;const waiting=new Promise(r=>reached=r);

@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { initialState, validateState, calculate, evaluate, demoState, parseCSV, CSV_HEADER, nowDate } from './domain.mjs';
+import { validateState, calculate, evaluate, demoState, parseCSV, CSV_HEADER, nowDate } from './domain.mjs';
 import { openStore } from './store.mjs';
 import { validateConfig, explain, requireAI, testConnection } from './ai.mjs';
 import { refreshFundNAV } from './funds.mjs';
@@ -158,7 +158,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         if (path === '/api/auth/logout' && req.method === 'POST') { const token = req.headers.cookie?.match(/balance_session=([a-f0-9]{64})/)?.[1]; if (token) store.db.prepare('DELETE FROM sessions WHERE token=?').run(hash(token)); res.setHeader('Set-Cookie', 'balance_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res, { ok: true }); }
         if (path === '/api/state' && req.method === 'PUT') { const input = await body(req); store.save(input.state, input.revision, String(input.label || '更新财务档案').slice(0,100)); store.applyIncome(); return json(res, view()); }
         if (path === '/api/demo' && req.method === 'POST') { const { revision } = await body(req), s = store.state(); if (s.assets.length || s.debts.length) throw new Error('请先导出并清空现有档案，再载入演示'); store.save(demoState(), revision, '载入虚构演示数据'); return json(res, view()); }
-        if (path === '/api/reset' && req.method === 'POST') { const { revision, confirmation } = await body(req); if (confirmation !== '清空财务档案') throw new Error('请输入完整确认文字'); store.save(initialState(), revision, '清空财务档案（可从历史恢复）');store.setKV('income_credits',[]); await assistantRuns.invalidate(); store.clearMessages(); store.clearReports(); return json(res, view()); }
+        if (path === '/api/reset' && req.method === 'POST') { const { revision, confirmation } = await body(req); if (confirmation !== '清空财务档案') throw new Error('请输入完整确认文字'); store.reset(revision); await assistantRuns.invalidate(); store.clearMessages(); store.clearReports(); return json(res, view()); }
         if (path === '/api/undo' && req.method === 'POST') { const { id, revision } = await body(req); store.undo(Number(id), revision); return json(res, view()); }
         if (path === '/api/import/preview' && req.method === 'POST') { const { csv, kind: inputKind } = await body(req), kind = inputKind === 'debts' ? 'debts' : 'assets', state = store.state(), records = parseCSV(csv, kind); const map = new Map(state[kind].map(a => [a.id, a])); for (const a of records) map.set(a.id, a); const clean = validateState({ ...state, [kind]: [...map.values()] }); const validated = clean[kind].filter(a => records.some(x => x.id === a.id)); return json(res, { records: validated, ...(kind === 'assets' ? { assets: validated } : {}), kind, existing: records.filter(a => state[kind].some(x => x.id === a.id)).length, revision: state.revision }); }
         if (path === '/api/import' && req.method === 'POST') { const input = await body(req), kind = input.kind === 'debts' ? 'debts' : 'assets', records = input.records ?? input.assets, state = store.state(); if (!Array.isArray(records)) throw new Error('导入记录无效'); const map = new Map(state[kind].map(a => [a.id,a])); for (const a of records) map.set(a.id, a); store.save({ ...state, [kind]: [...map.values()] }, input.revision, 'CSV 导入（相同编号替换）'); return json(res, view()); }

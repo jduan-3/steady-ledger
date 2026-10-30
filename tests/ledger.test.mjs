@@ -98,3 +98,130 @@ test('资金来源追问由服务端承接可信上一轮，即使模型拼接�
   const result=await bind(answer,'joined-evidence',{history:[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'用现有现金还是额外投入？'}]}).recordHoldingChange({query:'今天额外投入1000元买入科创基金，按今日净值记账',evidence:original+answer,side:'buy',assetId:'star',amount:1000,cashSource:'outside'});
   assert.equal(result.status,'applied');assert.equal(store.state().assets[1].quantity,600);assert.equal(store.state().assets[0].value,10000);
 });
+
+test('否定的买卖和收支不能入账，截取证据或补答资金来源也不能绕过',async t=>{
+  const {store,holding,bind}=setup(t),before=store.state({raw:true});
+  for(const question of ['我今天没有用现有现金买入1000元科创','我今天并未用现有现金买入1000元科创','不要记录我今天用现有现金买入1000元科创','我今天用现有现金买入1000元科创，但不要记账']){
+    await assert.rejects(holding(question),/被否定/);
+  }
+  const original='我今天没有用现有现金买入1000元科创';
+  await assert.rejects(holding(original,{evidence:'买入1000元科创'}),/被否定/);
+  await assert.rejects(bind('额外投入','negative-follow-up',{history:[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'这笔用现有现金，还是额外投入？'}]}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:original}),/被否定/);
+  await assert.rejects(holding('我今天没有卖出科创20份',{side:'sell',amount:undefined,quantity:20}),/被否定/);
+  for(const [question,side] of [['我今天没收到100元红包','income'],['我今天没有花了100元','expense']]){
+    await assert.rejects(bind(question).recordCashFlow({evidence:question,side,amount:100,description:'虚构收支'}),/被否定/);
+  }
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+
+test('否定其他动作或资金来源不阻止明确已发生的买入',async t=>{
+  const {store,holding}=setup(t);
+  assert.equal((await holding('我今天用额外投入买入1000元科创，不用现有现金')).status,'applied');
+  assert.equal(store.state().assets[0].value,10000);
+  assert.equal((await holding('我今天用现有现金买入1000元科创，没有卖出',{},'positive-buy')).status,'applied');
+  assert.equal(store.state().assets[0].value,9000);assert.equal(store.state().assets[1].quantity,1100);
+});
+
+test('数字必须匹配金额、份额、单价或费用；相同数字出现在其他用途不能作为证据',async t=>{
+  const {store,holding}=setup(t),before=store.state({raw:true}),question='我今天用现有现金买入100份科创，成交价2元';
+  for(const args of [{amount:100,price:2},{amount:2,price:2},{amount:undefined,quantity:2,price:2},{amount:undefined,quantity:100,price:100},{amount:undefined,quantity:100,price:2,fee:2}]){
+    await assert.rejects(holding(question,args),/对应单位和用途/);
+  }
+  await assert.rejects(holding('我今天用现有现金买入100手科创',{amount:undefined,quantity:100}),/对应单位和用途/);
+  await assert.rejects(holding('我今天用现有现金买入100份科创，成交价2份',{amount:undefined,quantity:100,price:2}),/对应单位和用途/);
+  await assert.rejects(holding('我今天用现有现金买入100份科创，成交价2元，手续费1%',{amount:undefined,quantity:100,price:2,fee:1}),/对应单位和用途/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+  const result=await holding(question,{amount:undefined,quantity:100,price:2});
+  assert.equal(result.quantity,100);assert.equal(result.amount,200);assert.equal(result.after.quantity,200);assert.equal(result.after.cash,9800);
+});
+
+test('中文数量、成交价和带千分位的金额仍按对应单位正确记账',async t=>{
+  const {holding}=setup(t);
+  const first=await holding('我今天用现有现金买入科创一百份，成交价二元',{amount:undefined,quantity:100,price:2});
+  assert.equal(first.quantity,100);assert.equal(first.after.cash,9800);
+  const second=await holding('我今天用现有现金买入1,000元科创',{},'thousand-separated');
+  assert.equal(second.after.cash,8800);assert.equal(second.quantity,500);
+});
+
+test('现金原话币种与工具参数不一致时拒绝，证据片段不能隐藏币种',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true});
+  for(const question of ['我今天收到100美元红包','我今天收到100美金红包','我今天收到USD 100红包','我今天收到100港币红包','我今天收到HKD 100红包','我今天收到美元红包100','我今天收到USD红包100']){
+    await assert.rejects(bind(question).recordCashFlow({evidence:question,side:'income',amount:100,currency:'CNY',description:'红包收入'}),/币种不一致/);
+  }
+  const question='我今天收到100美元红包';
+  await assert.rejects(bind(question).recordCashFlow({evidence:'收到100',side:'income',amount:100,currency:'CNY',description:'红包收入'}),/币种不一致/);
+  await assert.rejects(bind(question).recordCashFlow({evidence:question,side:'income',amount:100,description:'红包收入'}),/币种不一致/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+
+test('明确美元收入仅进入美元账户，不能从日期数字或数量推断收入',async t=>{
+  const {store,bind}=setup(t),state=store.state();
+  state.assets.push({id:'usd-cash',name:'美元现金',type:'cash',currency:'USD',value:50,asOf:date});store.save(state,state.revision);
+  const question='我今天收到100美元红包';
+  assert.equal((await bind(question).recordCashFlow({evidence:question,side:'income',amount:100,currency:'USD',cashAssetId:'usd-cash',description:'红包收入'})).status,'applied');
+  assert.equal(store.state().assets.find(a=>a.id==='usd-cash').value,150);assert.equal(store.state().assets.find(a=>a.id==='cash').value,10000);
+  const currencyFirst='我今天收到美元红包100';
+  assert.equal((await bind(currencyFirst,'currency-before-description').recordCashFlow({evidence:currencyFirst,side:'income',amount:100,currency:'USD',cashAssetId:'usd-cash',description:'红包收入'})).status,'applied');
+  assert.equal(store.state().assets.find(a=>a.id==='usd-cash').value,250);assert.equal(store.state().assets.find(a=>a.id==='cash').value,10000);
+  const bad='我10月29日收到红包，金额还没确认';
+  await assert.rejects(bind(bad,'date-is-not-money').recordCashFlow({evidence:bad,side:'income',amount:29,currency:'CNY',description:'红包收入'}),/对应单位和用途/);
+});
+
+test('持仓买入金额、成交价和费用也核对原话币种',async t=>{
+  const {store,holding}=setup(t),before=store.state({raw:true});
+  await assert.rejects(holding('我今天用现有现金买入100美元科创',{amount:100,currency:'CNY'}),/币种不一致/);
+  await assert.rejects(holding('我今天用现有现金买入科创100份，成交价2美元',{amount:undefined,quantity:100,price:2,currency:'CNY'}),/币种不一致/);
+  await assert.rejects(holding('我今天用现有现金买入1000元科创，手续费10美元',{fee:10,currency:'CNY'}),/币种不一致/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+
+test('清空档案会取消新基金待入账，净值补齐、重启或恢复旧快照均不能使它复活',async t=>{
+  const {store,service,bind,dir}=setup(t),question='我今天用额外投入买入1000元基金006789';
+  const pending=await bind(question).recordHoldingChange({query:'006789',fundCode:'006789',side:'buy',amount:1000,evidence:question});
+  assert.equal(pending.status,'pending');
+  const prior=store.ledgerEntry(pending.id),generation=store.ledgerGeneration();
+  store.reset(store.state().revision);
+  assert.equal(store.state().assets.length,0);assert.equal(store.ledgerGeneration(),generation+1);
+  assert.equal(store.ledgerEntry(pending.id).status,'cancelled');assert.equal(store.ledgerEntries({pending:true}).length,0);
+  store.setKV('fund_nav:006789',{date,price:2,currency:'CNY',basis:'unit_nav'});
+  await service.processPending();assert.equal(store.postLedgerEntry(prior).status,'cancelled');assert.equal(store.state().assets.length,0);
+  const reopened=openStore(dir);
+  try{assert.equal(reopened.ledgerGeneration(),generation+1);await createLedgerService(reopened,{clock:()=>now}).processPending();assert.equal(reopened.state().assets.length,0);}finally{reopened.close();}
+  store.undo(store.audit()[0].id,store.state().revision);await service.processPending();
+  assert.equal(store.state().assets.length,2);assert.ok(!store.state().assets.some(a=>a.fund?.code==='006789'));
+});
+
+test('清空时仍在查净值、尚未保存的请求不能写回，清空前绑定的现金工具也失效',async t=>{
+  let finish;const {store,service,bind}=setup(t,{fundOptions:{fetchImpl:()=>new Promise(resolve=>{finish=resolve;})}});
+  const question='我今天用额外投入买入1000元基金006789',oldCash=bind('我今天收到100元红包','stale-cash');
+  const inFlight=bind(question).recordHoldingChange({query:'006789',fundCode:'006789',side:'buy',amount:1000,evidence:question});
+  assert.equal(typeof finish,'function');assert.equal(store.ledgerEntries().length,0);
+  store.reset(store.state().revision);
+  finish(Response.json({ErrCode:0,Data:{LSJZList:[{FSRQ:date,DWJZ:'2'}]}}));
+  await assert.rejects(inFlight,/已清空/);
+  await assert.rejects(oldCash.recordCashFlow({evidence:'我今天收到100元红包',side:'income',amount:100,description:'红包'}),/已清空/);
+  await service.processPending();assert.equal(store.state().assets.length,0);assert.equal(store.ledgerEntries().length,0);
+});
+
+test('已开始处理的待入账在清空后保持取消；旧代号不能在底层事务重新提交',async t=>{
+  const {store,holding}=setup(t);store.setKV('fund_nav:011609',null);
+  const pending=await holding('我今天用额外投入买入1000元科创');let finish;
+  const service=createLedgerService(store,{clock:()=>now,fundOptions:{force:true,fetchImpl:()=>new Promise(resolve=>{finish=resolve;})}});
+  const running=service.processPending();assert.equal(typeof finish,'function');store.reset(store.state().revision);
+  finish(Response.json({ErrCode:0,Data:{LSJZList:[{FSRQ:date,DWJZ:'2'}]}}));await running;
+  assert.equal(store.ledgerEntry(pending.id).status,'cancelled');assert.equal(store.state().assets.length,0);
+  assert.throws(()=>store.postLedgerEntry({...pending,id:'stale-unpersisted-entry'},state=>({state})),/已清空/);
+});
+
+test('清空失败时档案、待办和代号全部回滚；新代号上的正常记账继续可用',async t=>{
+  const {store,holding,bind}=setup(t);store.setKV('fund_nav:011609',null);
+  const pending=await holding('我今天用额外投入买入1000元科创'),before=store.state({raw:true});
+  assert.throws(()=>store.reset(before.revision-1),e=>e.status===409);
+  store.db.exec("CREATE TRIGGER reject_reset BEFORE UPDATE ON ledger_entries BEGIN SELECT RAISE(ABORT,'reset failure'); END");
+  assert.throws(()=>store.reset(before.revision),/reset failure/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerGeneration(),0);assert.equal(store.ledgerEntry(pending.id).status,'pending');
+  store.db.exec('DROP TRIGGER reject_reset');store.reset(before.revision);
+  const state=store.state();state.assets=[{id:'new-cash',name:'新现金',type:'cash',currency:'CNY',value:10,asOf:date}];store.save(state,state.revision);
+  const question='我今天收到100元红包';const result=await bind(question,'new-generation').recordCashFlow({evidence:question,side:'income',amount:100,description:'红包收入'});
+  assert.equal(result.status,'applied');assert.equal(result.generation,1);assert.equal(store.state().assets[0].value,110);
+});

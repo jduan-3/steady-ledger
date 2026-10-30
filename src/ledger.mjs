@@ -16,16 +16,53 @@ function chineseNumber(text) {
   for(const c of text){if(c in digits)n=digits[c];else if(units[c]<10000){part+=(n||1)*units[c];n=0;}else if(units[c]){total+=(part+n||1)*units[c];part=0;n=0;}}
   return total+part+n;
 }
-function mentionedNumber(text,value) {
-  const input=normalize(text),numbers=[...input.matchAll(/\d+(?:\.\d+)?(?:万|千|百|k)?/g)].map(([s])=>{const unit=s.at(-1),scale={万:10000,千:1000,百:100,k:1000}[unit]||1;return Number(scale===1?s:s.slice(0,-1))*scale;});
-  numbers.push(...[...input.matchAll(/[零〇一二两三四五六七八九十百千万亿]+/g)].map(([s])=>chineseNumber(s)));
-  return numbers.some(n=>Math.abs(n-value)<1e-8);
+function numberFacts(text,kind) {
+  const input=String(text).normalize('NFKC').toLowerCase().replace(/\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?/g,s=>s.replace(/[,，]/g,'')).replace(/\s+/g,'');
+  const facts=[];
+  for(const match of input.matchAll(/\d+(?:\.\d+)?(?:万|千|百|亿|k)?|[零〇一二两三四五六七八九十百千万亿]+(?:点[零〇一二两三四五六七八九]+)?/g)){
+    const [raw]=match,before=input.slice(0,match.index),after=input.slice(match.index+raw.length);
+    const unit=after.match(/^(美元|美金|港币|港元|港幣|人民币|人民幣|usd|hkd|cny|rmb|元|块钱|块|份|股|手)/)?.[0];
+    const prefix=before.match(/(美元|美金|港币|港元|港幣|人民币|人民幣|usd|hkd|cny|rmb|us\$|hk\$|[¥￥$])$/)?.[0];
+    const context=prefix?before.slice(0,-prefix.length):before;
+    const fee=/(?:手续费|费用|佣金|申购费|赎回费)(?:为|是|共|合计|约|[:：])*$/.test(context)||/^(?:元|块钱|块|美元|美金|港币|港元|usd|hkd|cny)?(?:的)?(?:手续费|费用|佣金)/.test(after);
+    const price=/(?:成交价|单价|价格|均价|每股|每份|按)(?:为|是|共|约|[:：])*$/.test(context)||/^(?:元|块|美元|港元|usd|hkd)(?:\/(?:股|份)|的?(?:成交价|单价|均价|价格))/.test(after);
+    const quantityUnit=/^(份|股|手)$/.test(unit||'');
+    let role=quantityUnit?(fee||price?null:'quantity'):fee?'fee':price?'price':unit||prefix?'amount':null;
+    if(/^(?:%|成|折|倍|个|笔|张|只|天|日|月|年)/.test(after))role=null;
+    // Keep documented cash shorthand such as “收到一万的红包”; bare codes,
+    // dates and unrelated numbers are not amounts or share quantities.
+    if(!role&&kind==='cash'&&/^(?:的?(?:红包|工资|收入|奖金)|[，,。；;！!]|$)/.test(after)&&/(?:收到|到账|收入|红包|支出|花了|付了|支付|花掉)(?:了|共|一共|合计|总共|约|[:：])*$/.test(context))role='amount';
+    const money=[prefix,unit].filter(Boolean),currencies=new Set();
+    for(const token of money){
+      if(/美元|美金|usd|us\$|^\$$/.test(token))currencies.add('USD');
+      else if(/港币|港元|港幣|hkd|hk\$/.test(token))currencies.add('HKD');
+      else if(/人民币|人民幣|cny|rmb|[¥￥]/.test(token))currencies.add('CNY');
+    }
+    if(!currencies.size&&/^(元|块钱|块)$/.test(unit||''))currencies.add('CNY');
+    const arabic=raw.match(/^(\d+(?:\.\d+)?)(万|千|百|亿|k)?$/),parts=raw.split('点');
+    const value=arabic?Number(arabic[1])*({万:10000,千:1000,百:100,亿:1e8,k:1000}[arabic[2]]||1):chineseNumber(parts[0])+(parts[1]?Number('0.'+[...parts[1]].map(c=>chineseNumber(c)).join('')):0);
+    facts.push({value,role,unit,currencies:[...currencies]});
+  }
+  return facts;
+}
+function checkCurrency(text,args,kind,currency) {
+  if(args.currency&&args.currency!==currency)throw new Error('原话币种、工具币种与入账账户不一致，请核对');
+  const facts=numberFacts(text,kind),input=String(text).normalize('NFKC').toLowerCase();
+  const named=[['USD',/美元|美金|usd|us\$/],['HKD',/港币|港元|港幣|hkd|hk\$/],['CNY',/人民币|人民幣|cny|rmb|[¥￥]/]].filter(([,pattern])=>pattern.test(input)).map(([code])=>code);
+  for(const role of ['amount','price','fee'])if(args[role]!=null){
+    const matches=facts.filter(f=>f.role===role&&Math.abs(f.value-args[role])<1e-8);
+    const currencies=matches.flatMap(f=>f.currencies.length?f.currencies:named);
+    if(currencies.some(c=>c!==currency))throw new Error('原话币种与入账币种不一致，请核对；本次不自动换汇');
+    if(currency!=='CNY'&&!currencies.includes(currency))throw new Error('请明确金额、价格和费用的币种：'+currency+'；本次不自动猜测换汇');
+  }
 }
 function evidenceFor(meta,evidence) {
   const previous=meta.history?.at(-2),answer=meta.history?.at(-1);
   if(previous?.role==='user'&&answer?.role==='assistant'&&/现有现金|额外投入/.test(answer.content)&&/现有现金|额外投入|账外|外部资金|用现金|余额|^现金[。！!]?$/u.test(meta.question)&&!/买入|卖出|加仓|减仓|申购|赎回/.test(meta.question))return {text:previous.content,at:Date.parse(previous.created_at)||meta.startedAt};
   if(!evidence)return {text:meta.question,at:meta.startedAt||Date.now()};
-  if(meta.question.includes(evidence))return {text:evidence,at:meta.startedAt||Date.now()};
+  // A model-selected excerpt cannot hide negation, units or currencies elsewhere
+  // in the same instruction. The trusted source remains the complete user turn.
+  if(meta.question.includes(evidence))return {text:meta.question,at:meta.startedAt||Date.now()};
   throw new Error('只能根据用户当前明确的记账指令入账，不能使用旧记录或页面备注作为指令');
 }
 function mentionsHolding(asset,text) {
@@ -37,11 +74,15 @@ function mentionsHolding(asset,text) {
 }
 function authorize(meta,args,kind) {
   const evidence=evidenceFor(meta,args.evidence),text=evidence.text;
+  if(!(kind==='cash'?['income','expense']:['buy','sell']).includes(args.side))throw new Error('记账方向无效');
   if(meta.question.includes(text)&&/如果|假设|举例|比如|假如/.test(meta.question))throw new Error('这是讨论或计划，尚未确认发生，不能直接记账');
   if(/如果|假设|举例|比如|打算|计划|考虑|要不要|建议|想买|想卖|准备买|准备卖|会不会|假如/.test(text))throw new Error('这是讨论或计划，尚未确认发生，不能直接记账');
   const actions=kind==='cash'?(args.side==='income'?/收到|到账|收入|红包/:/支出|花了|付了|支付|花掉/):args.side==='buy'?/买了|买入|加了|加仓|申购|记录|记一下|记账/:/卖了|卖出|减了|减仓|赎回|清仓|记录|记一下|记账/;
   if(!actions.test(text))throw new Error('需要明确说明已经发生的买卖或收支，才能记账');
-  for(const key of ['amount','quantity','price','fee'])if(args[key]!=null&&(!Number.isFinite(args[key])||args[key]<(key==='fee'?0:1e-8)||args[key]>1e14||!mentionedNumber(text,args[key])))throw new Error('金额、数量、价格与费用必须来自用户原话，不能猜测');
+  const denied=new RegExp('(?:没有|并未|未曾|尚未|从未|没|未|并非|不是|不曾|不再|不(?!仅|但|光)|别|不要|无需|取消)[^，,。；;！？!?\\n]*?(?:'+actions.source+'|记账|记录|登记|入账)');
+  if([text,meta.question].some(s=>denied.test(s)))throw new Error('买卖、收支或记账指令被否定，未修改账本；请明确实际发生的事项');
+  const facts=numberFacts(text,kind);
+  for(const key of ['amount','quantity','price','fee'])if(args[key]!=null&&(!Number.isFinite(args[key])||args[key]<(key==='fee'?0:1e-8)||args[key]>1e14||!facts.some(f=>f.role===key&&Math.abs(f.value-args[key])<1e-8&&!(key==='quantity'&&f.unit==='手'))))throw new Error('金额、数量、价格与费用必须来自用户原话，并匹配对应单位和用途，不能猜测');
   if(args.price!=null&&!/成交价|单价|价格|每股|每份|均价|按.{0,12}(元|块|美元|港元)/.test(text))throw new Error('用户尚未提供明确成交价格，不能把模型猜测的价格作为成交价');
   return evidence;
 }
@@ -109,7 +150,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
   }
   const permitted=scope=>{const c=store.config();if(!c.allowLedgerWrites||!c.consent||(scope&&c.scopeId!==scope))throw new Error('自然语言记账未开启或授权已变更');};
   return {
-    bind(meta,{isActive=()=>true}={}){const check=()=>{permitted(meta.scopeId);if(!isActive())throw new Error('本轮回答已停止，尚未提交的记账已取消');};return {
+    bind(meta,{isActive=()=>true}={}){const generation=meta.ledgerGeneration??store.ledgerGeneration();const check=()=>{permitted(meta.scopeId);if(generation!==store.ledgerGeneration())throw new Error('财务档案已清空，旧记账任务已失效，请重新确认');if(!isActive())throw new Error('本轮回答已停止，尚未提交的记账已取消');};return {
       async recordHoldingChange(args){
         check();const evidence=authorize(meta,args,'holding'),state=store.state({raw:true});
         const query=args.query&&normalize(evidence.text).includes(normalize(args.query))?args.query:null;
@@ -128,6 +169,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         }
         if(!asset)return need('未找到唯一持仓，请补充准确股票或基金代码');
         if(!asset.security&&!asset.fund?.code)return need('该持仓尚未登记证券代码，请补充代码');
+        checkCurrency(evidence.text,args,'holding',asset.currency);
         if(args.amount==null&&args.quantity==null&&args.side==='sell'&&/清仓/.test(evidence.text))args={...args,quantity:asset.quantity};
         if((args.amount==null)===(args.quantity==null))return need('请明确本次买卖金额或股数／份额，二者选一');
         if(!Number.isFinite(asset.quantity))return need('原持仓数量未知，请确认当前股数／份额');
@@ -148,7 +190,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         if(args.date&&!evidence.text.includes(args.date)&&date!==new Date(Date.parse(baseDate)+relative*86400000).toISOString().slice(0,10))return need('记账日期需要来自用户原话');
         if(date>nowDate(timeZone,clock()))return need('未来计划尚未发生，不能记成已完成买卖');
         if(args.price==null&&[0,6].includes(new Date(date+'T12:00:00Z').getUTCDay()))return need('该日期通常休市，请提供实际成交日或准确成交价');
-        const id=meta.requestId+':holding:'+asset.id,entry={id,requestId:meta.requestId,scopeId:meta.scopeId,kind:'holding',asset,base:fingerprint(matches[0]),side:args.side,amount:args.amount??null,quantity:args.quantity??null,price:args.price??null,fee:args.fee??null,date,cashSource,cashAssetId:cash?.id||null,status:'pending',createdAt:clock().toISOString(),label:`对话记账 · ${args.side==='buy'?'加仓':'减仓'} · ${asset.name}`};
+        const id=meta.requestId+':holding:'+asset.id,entry={id,requestId:meta.requestId,scopeId:meta.scopeId,generation,kind:'holding',asset,base:fingerprint(matches[0]),side:args.side,amount:args.amount??null,quantity:args.quantity??null,price:args.price??null,fee:args.fee??null,date,cashSource,cashAssetId:cash?.id||null,status:'pending',createdAt:clock().toISOString(),label:`对话记账 · ${args.side==='buy'?'加仓':'减仓'} · ${asset.name}`};
         entry.signature=createHash('sha256').update(JSON.stringify({asset:asset.id,side:entry.side,amount:entry.amount,quantity:entry.quantity,price:entry.price,fee:entry.fee,date,cashSource,cashAssetId:entry.cashAssetId})).digest('hex');
         const prior=store.ledgerEntry(id);if(prior)return store.postLedgerEntry(entry);
         // A second pending instruction for this asset requires resolving the first
@@ -161,10 +203,11 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
       async recordCashFlow(args){
         check();const evidence=authorize(meta,args,'cash'),state=store.state({raw:true});
         if(/买入|买了|卖出|卖了|加仓|赎回|申购/.test(evidence.text))return need('证券买卖请使用持仓记账，不能再单独记录一遍现金收支');
-        const asset=cashAccount(state,args.currency||'CNY',args.cashAssetId);if(!asset)return need('请选择现金账户');
+        const currency=args.currency||'CNY';checkCurrency(evidence.text,args,'cash',currency);
+        const asset=cashAccount(state,currency,args.cashAssetId);if(!asset)return need('请选择现金账户');
         if(state.assets.filter(a=>a.type==='cash'&&!a.restricted&&a.currency===asset.currency).length>1&&![asset.name,asset.account].filter(Boolean).some(s=>normalize(evidence.text).includes(normalize(s))))return need('有多个现金账户，请明确收入或支出属于哪一个');
         const relative=/前天/.test(evidence.text)?-2:/昨天|昨日/.test(evidence.text)?-1:0,date=new Date(Date.parse(nowDate(state.preferences.timeZone,new Date(evidence.at)))+relative*86400000).toISOString().slice(0,10);
-        const entry={id:meta.requestId+':cash:'+args.side+':'+asset.id,requestId:meta.requestId,kind:'cash',asset:{id:asset.id,name:asset.name,currency:asset.currency},amount:args.amount,side:args.side,date,status:'pending',createdAt:clock().toISOString(),label:'对话记账 · '+args.description};
+        const entry={id:meta.requestId+':cash:'+args.side+':'+asset.id,requestId:meta.requestId,generation,kind:'cash',asset:{id:asset.id,name:asset.name,currency:asset.currency},amount:args.amount,side:args.side,date,status:'pending',createdAt:clock().toISOString(),label:'对话记账 · '+args.description};
         entry.signature=createHash('sha256').update(JSON.stringify({asset:asset.id,amount:args.amount,side:args.side})).digest('hex');
         return store.postLedgerEntry(entry,current=>{const cash=current.assets.find(a=>a.id===asset.id);if(!cash||cash.type!=='cash'||cash.restricted||cash.currency!==asset.currency)throw new Error('现金账户已变更');const before=cash.value,next=round(before+(args.side==='income'?args.amount:-args.amount));if(next<cash.emergency+cash.earmarked)throw new Error('现金可用余额不足');cash.value=next;cash.asOf=entry.date;return {state:current,receipt:{before:{cash:before},after:{cash:next},message:'现金收支已记入本地账本'}};});
       }

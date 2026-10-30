@@ -30,7 +30,7 @@ export function createAssistantRuns(store,{dataDir,services}) {
   };
   const launch=async meta=>{
     const config=store.config({secret:true});
-    if(!config.consent||!config.baseUrl||!config.model||config.scopeId!==meta.scopeId||(meta.contextEnabled!==undefined&&meta.contextEnabled!==config.includeHistory)||(meta.contextEnabled===undefined&&meta.history?.length&&!config.includeHistory)) {
+    if(!config.consent||!config.baseUrl||!config.model||config.scopeId!==meta.scopeId||(meta.ledgerGeneration??0)!==store.ledgerGeneration()||(meta.contextEnabled!==undefined&&meta.contextEnabled!==config.includeHistory)||(meta.contextEnabled===undefined&&meta.history?.length&&!config.includeHistory)) {
       store.setKV(KEY,null);remove(meta.id);return null;
     }
     if(!meta.conversationId) {
@@ -106,7 +106,7 @@ export function createAssistantRuns(store,{dataDir,services}) {
       if(conversationId&&!thread)throw error('对话不存在或已删除',404);
       if(thread&&thread.scope_id!==config.scopeId)throw error('模型或授权设置已变更，请新建对话继续');
       thread??=store.createConversation(config.scopeId,question);
-      const meta={id:randomUUID(),requestId,scopeId:config.scopeId,conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id).slice(-12):[],startedAt:Date.now()};
+      const meta={id:randomUUID(),requestId,scopeId:config.scopeId,ledgerGeneration:store.ledgerGeneration(),conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id).slice(-12):[],startedAt:Date.now()};
       if(config.includePageData)meta.pageData=buildAssistantData(store,meta.snapshot);
       // Saving the frozen context precedes both opening and submitting work.
       store.setKV(KEY,meta);
