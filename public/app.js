@@ -2,6 +2,7 @@ import { readEventStream } from './sse.js';
 import { marketPageHTML, marketBriefsHTML } from './markets.js';
 import { monthlyPageHTML } from './monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from './watchboard.js';
+import { fundReferenceHTML } from './fund-reference.js';
 
 function adviceText(value) {
   return String(value??'').replace(/\r\n?/g,'\n')
@@ -214,7 +215,7 @@ async function api(path, options = {}) {
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4500); }
 function showDialog(title, subtitle, html) { const d = $('#dialog'); d.innerHTML = `<div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ''}</div><button class="icon-btn" data-action="close-dialog" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`; if (!d.open) d.showModal(); }
-const closeDialog = () => { clearTimeout(stockLookupTimer); stockSearchEpoch++; $('#dialog').close(); };
+const closeDialog = () => { clearTimeout(stockLookupTimer); clearTimeout(activePriceHistory?.referenceTimer); activePriceHistory=null; stockSearchEpoch++; $('#dialog').close(); };
 function field(label, name, value = '', options = {}) {
   const {type='number',help='',full=false,required=false,placeholder='',step='any',min='0',max,maxlength} = options;
   return `<label class="form-field${full ? ' full' : ''}"><span>${label}</span><input name="${name}" type="${type}" value="${esc(value ?? '')}" ${type==='number' ? `min="${min}" step="${step}" ${max !== undefined ? `max="${max}"` : ''}` : ''} ${required?'required':''} ${maxlength!==undefined?`maxlength="${maxlength}"`:''} placeholder="${esc(placeholder)}" autocomplete="${type==='password'?'new-password':'off'}" />${help ? `<small>${help}</small>` : ''}</label>`;
@@ -383,15 +384,39 @@ function selectHistoryDate(date) {
   view.selectedDate=date;
   $('#price-history-chart').innerHTML=priceHistoryChartHTML(view.asset,view.items,date);
 }
+function paintFundReference(view) {
+  if(activePriceHistory!==view||!$('#dialog').open||!$('#fund-reference-view'))return;
+  const reference=view.referenceData;
+  if(view.referenceMode==='intraday'&&!reference?.intraday?.points?.length&&reference?.history?.points?.length)view.referenceMode='daily';
+  const points=(view.referenceMode==='daily'?reference?.history:reference?.intraday)?.points||[];
+  const index=view.referencePoint==null?null:points.findIndex(point=>(point.time||point.date)===view.referencePoint);
+  $('#fund-reference-view').innerHTML=fundReferenceHTML(reference,{mode:view.referenceMode,selectedIndex:index<0?null:index,loading:view.referenceBusy,error:view.referenceError});
+}
+function scheduleFundReference(view) {
+  clearTimeout(view.referenceTimer);
+  if(activePriceHistory!==view||!$('#dialog').open||!view.referenceData?.reference)return;
+  view.referenceTimer=setTimeout(()=>{if(document.visibilityState==='hidden')scheduleFundReference(view);else void loadFundReference(view);},60000);
+}
+async function loadFundReference(view,{initial=false}={}) {
+  if(view.referenceBusy||activePriceHistory!==view||!$('#dialog').open)return;
+  view.referenceBusy=true;view.referenceError='';paintFundReference(view);
+  try{
+    if(initial){view.referenceData=await api('/market/fund-reference?id='+encodeURIComponent(view.asset.id));paintFundReference(view);}
+    if(!initial||view.referenceData?.reference)view.referenceData=await api('/market/fund-reference/refresh',{method:'POST',body:{id:view.asset.id}});
+  }catch(error){view.referenceError=error.name==='TypeError'?(view.referenceData?.reference?'暂时无法更新参考行情，保留已有数据。':'暂时无法读取参考行情，请重试。'):error.message;}
+  finally{view.referenceBusy=false;paintFundReference(view);scheduleFundReference(view);}
+}
 async function priceHistoryDialog(id){
   const a=data.state.assets.find(a=>a.id===id);if(!a)return;
+  clearTimeout(activePriceHistory?.referenceTimer);
   showDialog(a.name+' · 涨跌记录',a.valuation?.source||'', '<div id="price-history-view"><p class="inline-note">正在读取…</p></div>');
-  const view={asset:a,items:[],selectedDate:''};activePriceHistory=view;
+  const view={asset:a,items:[],selectedDate:'',referenceMode:'intraday',referencePoint:null};activePriceHistory=view;
   try {
     const {items}=await api('/market/history?id='+encodeURIComponent(id));
     if(activePriceHistory!==view||!$('#dialog').open||!$('#price-history-view'))return;
     view.items=items.filter(q=>Number.isFinite(q.price)&&q.price>0&&/^\d{4}-\d{2}-\d{2}$/.test(q.date)&&Number.isFinite(Date.parse(q.date))).sort((a,b)=>b.date.localeCompare(a.date));
     $('#price-history-view').innerHTML=`<section id="price-history-chart">${priceHistoryChartHTML(a,view.items)}</section><div id="instrument-basics">${instrumentBasicsHTML(a,null)}</div>${view.items.length?`<details class="history-records"><summary>逐日明细 <span>${view.items.length} 条记录</span></summary><div class="table-scroll"><table><thead><tr><th>日期</th><th>${a.type==='fund'?'单位净值':'价格'}</th><th>涨跌幅</th></tr></thead><tbody>${view.items.map(q=>{const pct=quotePercent(q);return `<tr><td>${esc(q.date)}</td><td>${quoteNumber(q.price)} ${esc(q.currency)}</td><td class="${pct===null?'muted':movementClass(pct)}">${pct===null?'—':signed(pct)+'%'}</td></tr>`;}).join('')}</tbody></table></div></details>`:''}<p class="instrument-note history-footnote">按披露日／交易日保存，最多展示最近 60 条记录。价格变化不代表你的实际投资收益。</p>`;
+    if(a.type==='fund'){$('#price-history-view').innerHTML+=`<section id="fund-reference-view" class="fund-reference">${fundReferenceHTML(null)}</section>`;void loadFundReference(view,{initial:true});}
     await loadInstrumentDetails(view);
   } catch(error) {
     if(activePriceHistory===view&&$('#dialog').open&&$('#price-history-view'))$('#price-history-view').innerHTML=`<p class="instrument-status" role="alert">${esc(error.message)}</p>${button('asset-price-history','重新读取','refresh','secondary',`data-id="${esc(id)}"`)}`;
@@ -807,6 +832,10 @@ document.addEventListener('click',async event=>{
     if(action==='asset-price-history')return priceHistoryDialog(target.dataset.id);
     if(action==='history-point'){selectHistoryDate(target.dataset.date);$('#price-history-chart [aria-pressed="true"]')?.focus?.();return;}
     if(action==='retry-instrument-details'){if(activePriceHistory)return loadInstrumentDetails(activePriceHistory);return;}
+    if(action==='fund-reference-refresh'){if(activePriceHistory)return loadFundReference(activePriceHistory);return;}
+    if(action==='fund-reference-mode'){
+      if(activePriceHistory&&['intraday','daily'].includes(target.dataset.mode)){activePriceHistory.referenceMode=target.dataset.mode;activePriceHistory.referencePoint=null;paintFundReference(activePriceHistory);}return;
+    }
     if(action==='add-debt'||action==='edit-debt')return debtDialog(target.dataset.id);
     if(action==='asset-filter'){assetFilter=target.dataset.filter;return render();}
     if(action==='stock-market-filter'){if(!['all','CN','HK','US','BJ','unknown'].includes(target.dataset.market))return;stockMarketFilter=target.dataset.market;return render();}
@@ -866,6 +895,10 @@ document.addEventListener('click',async event=>{
 document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
+  if(event.target.matches('[data-fund-reference-range]')){
+    const view=activePriceHistory,points=(view?.referenceMode==='daily'?view?.referenceData?.history:view?.referenceData?.intraday)?.points||[],point=points[Number(event.target.value)];
+    if(view&&point){view.referencePoint=point.time||point.date;paintFundReference(view);$('[data-fund-reference-range]')?.focus?.();}return;
+  }
   if(event.target.matches('[data-history-date]')){selectHistoryDate(event.target.value);$('[data-history-date]')?.focus?.();return;}
   if(event.target.matches('#asset-form [name=costMode]')){const draft=readAssetDraft();draft.costEntryAmount=null;draft.costPanelOpen=true;assetDialog(draft.id,draft);}
 

@@ -22,6 +22,16 @@ test('买入未说明现金来源时只追问，不能因只有一个现金账�
   const {store,holding}=setup(t),before=store.state({raw:true});const result=await holding('我今天加了1000元科创');
   assert.equal(result.status,'needs_information');assert.match(result.question,/现有现金.*额外投入/);assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
 });
+test('买入金额缺失时只追问该字段，用户补答金额后承接原标的和资金来源',async t=>{
+  const {bind,holding}=setup(t),original='今天用现有现金买入科创';
+  const first=await holding(original,{amount:undefined});assert.equal(first.status,'needs_information');
+  const result=await bind('1000元','value-follow-up',{history:[{role:'user',content:original},{role:'assistant',content:first.question}]}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:'1000元'});
+  assert.equal(result.status,'applied');assert.equal(result.after.cash,9000);
+});
+test('真实买入附带更新持仓请求时仍走买入，不能错误转成总持仓校准',async t=>{
+  const {holding}=setup(t);
+  assert.equal((await holding('今天用现有现金买入1000元科创，请更新持仓')).status,'applied');
+});
 test('现有现金买入同时更新持仓与现金、保留成本，重放只入账一次且记录可恢复',async t=>{
   const {store,holding}=setup(t),before=store.state({raw:true});
   const result=await holding('我今天用现有现金加仓1000元科创');assert.equal(result.status,'applied');assert.equal(result.after.quantity,600);assert.equal(result.after.cash,9000);assert.equal(result.after.cost,1100);assert.equal(result.estimated,true);
@@ -32,6 +42,55 @@ test('额外投入增加持仓，保留原现金；资金来源的简短后续�
   const {store,bind}=setup(t),original='我今天加了1000元科创';
   const result=await bind('额外投入','follow-up',{history:[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'这笔用现有现金，还是额外投入？'}]}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:original,cashSource:'outside'});
   assert.equal(result.status,'applied');assert.equal(store.state().assets[0].value,10000);assert.equal(store.state().assets[1].quantity,600);
+});
+test('口语买入金额与从现金支付可识别，含糊日期先追问而不默认今天',async t=>{
+  const {store,holding}=setup(t),before=store.state({raw:true});
+  const ambiguous=await holding('我买了 1000 的科创50 几天 我自己有的那个 基金 从现金里加入的');
+  assert.equal(ambiguous.status,'needs_information');assert.match(ambiguous.missing.join(''),/日期/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+  const confirmed=await holding('今天买了1000的科创基金，从现金里加入的');
+  assert.equal(confirmed.status,'applied');assert.equal(confirmed.after.cash,9000);assert.equal(confirmed.after.quantity,600);
+});
+test('实际失败原话补答今天买的后保存指定日期待入账，净值披露后才联动现金且不重复',async t=>{
+  const current=new Date('2026-10-30T06:47:38Z'),{store,bind,service}=setup(t,{clock:()=>current});
+  const original='我买了 1000 的科创50 几天 我自己有的那个 基金 从现金里加入的',reply='今天买的';
+  const history=[{role:'user',content:original,created_at:'2026-10-30T06:41:03Z'},{role:'assistant',content:'你记得是哪天下单的吗？告诉我日期。'}];
+  const before=store.state({raw:true});
+  for(const evidence of [original+'。'+reply,reply]){
+    const result=await bind(reply,'date-follow-up',{history,startedAt:current.getTime()}).recordHoldingChange({query:'今天买了1000元科创50基金，从现金里支付',assetId:'star',side:'buy',amount:1000,evidence,date:'2026-10-30',cashSource:'registered'});
+    assert.equal(result.status,'pending');assert.equal(result.date,'2026-10-30');assert.equal(result.amount,1000);assert.equal(result.cashAssetId,'cash');
+  }
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,1);
+  store.setKV('fund_nav:011609',{date:'2026-10-30',price:2,currency:'CNY',basis:'unit_nav'});
+  await service.processPending();await service.processPending();
+  assert.equal(store.state().assets[0].value,9000);assert.equal(store.state().assets[1].quantity,600);
+});
+test('连续补答日期和资金来源能承接同一笔，跨午夜不把原来的今天移到下一天',async t=>{
+  const current=new Date('2026-10-29T16:01:00Z'),{bind}=setup(t,{clock:()=>current});
+  const history=[
+    {role:'user',content:'我买了1000元科创，几天前的',created_at:'2026-10-29T15:50:00Z'},
+    {role:'assistant',content:'是哪天买的？'},
+    {role:'user',content:'今天买的',created_at:'2026-10-29T15:55:00Z'},
+    {role:'assistant',content:'用现有现金还是额外投入？'}
+  ];
+  const result=await bind('现有现金','multiple-follow-ups',{history,startedAt:current.getTime()}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:'今天买的',cashSource:'registered'});
+  assert.equal(result.status,'applied');assert.equal(result.date,'2026-10-29');assert.equal(result.after.cash,9000);
+});
+test('日期补答只承接相邻的未完成买卖，不能借旧记录、建议或否定指令入账',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),original='我今天用现有现金买入1000元科创';
+  const args={query:'科创',side:'buy',amount:1000,evidence:original+'。今天买的'};
+  for(const history of [[],[{role:'user',content:original},{role:'assistant',content:'今天市场怎么样？'}],
+    [{role:'user',content:original},{role:'assistant',content:'已保存待入账，日期是哪天？',metadata:{toolCalls:[{name:'record_holding_change',status:'complete',output:{status:'pending'}}]}}],
+    [{role:'user',content:original},{role:'assistant',content:'已完成入账，是哪天买的？',metadata:{toolCalls:[{name:'record_holding_change',status:'complete',output:{status:'applied'}}]}}]
+  ])await assert.rejects(bind('今天买的','unrelated',{history}).recordHoldingChange(args),/当前明确|明确说明/);
+  for(const content of ['如果我用现有现金买入1000元科创','我没有用现有现金买入1000元科创']){
+    const history=[{role:'user',content},{role:'assistant',content:'是哪天买的？'}];
+    await assert.rejects(bind('今天买的','denied',{history}).recordHoldingChange({...args,evidence:content}),/讨论或计划|被否定/);
+  }
+  const history=[{role:'user',content:'我用现有现金买入100份科创，成交价2元'},{role:'assistant',content:'是哪天买的？'}];
+  await assert.rejects(bind('今天买的','wrong-unit',{history}).recordHoldingChange({...args,amount:100}),/对应单位和用途/);
+  await assert.rejects(bind('今天卖的','conflicting-side',{history:[{role:'user',content:original},{role:'assistant',content:'是哪天买的？'}]}).recordHoldingChange(args),/买卖方向/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
 });
 test('卖出增加现金并按原平均成本减记剩余持仓，不能超卖',async t=>{
   const {store,holding}=setup(t);
@@ -224,4 +283,70 @@ test('清空失败时档案、待办和代号全部回滚；新代号上的正�
   const state=store.state();state.assets=[{id:'new-cash',name:'新现金',type:'cash',currency:'CNY',value:10,asOf:date}];store.save(state,state.revision);
   const question='我今天收到100元红包';const result=await bind(question,'new-generation').recordCashFlow({evidence:question,side:'income',amount:100,description:'红包收入'});
   assert.equal(result.status,'applied');assert.equal(result.generation,1);assert.equal(store.state().assets[0].value,110);
+});
+
+const balanceHistory=()=>[
+  {role:'user',content:'我更新一下我的科创的持仓'},
+  {role:'assistant',content:'把现在的份额或金额告诉我。'},
+  {role:'user',content:'科创50目前持有23671.48份，持仓收益率还是-18.03%，单位成本是1.1141'},
+  {role:'assistant',content:'和旧持仓有差异，要按 App 数字更新吗？'},
+  {role:'user',content:'嗯嗯直接更新，不用管1000元了'},
+  {role:'assistant',content:'现金保持不变，还是另有明确的现金调整？'}
+];
+test('持仓校准承接连续补答，绝对份额、单位成本和现金调整分别核对，不能当成买入差额',async t=>{
+  const {store,bind}=setup(t);store.setKV('fund_nav:011609',{date,price:0.9132,currency:'CNY',basis:'unit_nav'});
+  const question='现金 -1000 其他的不管',history=balanceHistory(),bound=bind(question,'balance-follow-up',{history});
+  const redirected=await bound.recordHoldingChange({query:'科创',side:'buy',quantity:3218.48,evidence:'模型拼接的旧买入记录'});
+  assert.equal(redirected.status,'use_other_tool');assert.equal(redirected.tool,'set_holding_balance');assert.equal(store.ledgerEntries().length,0);
+  const args={query:'科创',assetId:'star',quantity:23671.48,averageCost:1.1141,cashDelta:-1000,cashAssetId:'cash',evidence:question};
+  const result=await bound.setHoldingBalance(args);
+  assert.equal(result.status,'applied');assert.equal(result.after.quantity,23671.48);assert.equal(result.after.cost,26372.4);assert.equal(result.after.cash,9000);
+  assert.equal(store.state().assets[1].investment.returnPercent.toFixed(2),'-18.03');
+  const revision=store.state().revision;assert.equal((await bound.setHoldingBalance(args)).replayed,true);assert.equal(store.state().revision,revision);assert.equal(store.state().assets[0].value,9000);
+});
+test('校准缺信息时逐项追问，补答总份额和现金不动后直接完成同一笔',async t=>{
+  const {store,bind}=setup(t),original='请更新科创持仓',args={query:'科创',evidence:original};
+  const first=await bind(original,'balance-missing').setHoldingBalance(args);
+  assert.equal(first.status,'needs_information');assert.match(first.question,/份额|股数|数量/);assert.equal(store.ledgerEntries().length,0);
+  const history=[{role:'user',content:original},{role:'assistant',content:first.question}];
+  const second=await bind('目前持有200份','balance-quantity',{history}).setHoldingBalance({...args,quantity:200,evidence:'目前持有200份'});
+  assert.equal(second.status,'needs_information');assert.match(second.question,/现金/);assert.equal(store.ledgerEntries().length,0);
+  history.push({role:'user',content:'目前持有200份'},{role:'assistant',content:second.question});
+  const result=await bind('现金不动','balance-cash',{history}).setHoldingBalance({...args,quantity:200,cashDelta:0,evidence:'现金不动'});
+  assert.equal(result.status,'applied');assert.equal(store.state().assets[1].quantity,200);assert.equal(store.state().assets[1].costBasis,null);assert.equal(store.state().assets[0].value,10000);
+});
+test('校准不能用推算增量、助手数字、被否定的指令或无关历史写账',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),history=balanceHistory(),args={query:'科创',quantity:23671.48,averageCost:1.1141,cashDelta:-1000,evidence:'现金-1000'};
+  for(const extra of [{quantity:3218.48},{averageCost:1},{cashDelta:-3556}]){
+    const result=await bind('现金-1000','balance-hallucination',{history}).setHoldingBalance({...args,...extra});
+    assert.equal(result.status,'needs_information');assert.ok(result.question);assert.ok(result.instruction.includes('不要要求重说'));
+  }
+  for(const question of ['如果更新科创持仓为200份，现金不动','不要更新科创持仓为200份，现金不动']){
+    const result=await bind(question,'balance-denied').setHoldingBalance({...args,quantity:200,averageCost:undefined,cashDelta:0,evidence:question});
+    assert.equal(result.status,'blocked');
+  }
+  const noContext=await bind('现金-1000','balance-no-context').setHoldingBalance(args);
+  assert.equal(noContext.status,'needs_information');
+  const savedHistory=[...history,{role:'user',content:'现金-1000'},{role:'assistant',content:'已更新。还要直接更新吗？',metadata:{toolCalls:[{name:'set_holding_balance',output:{status:'applied'}}]}}];
+  assert.equal((await bind('直接更新','balance-already-saved',{history:savedHistory}).setHoldingBalance(args)).status,'needs_information');
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+test('校准现金变化的单位错误或同一条消息互相矛盾时只追问，不误扣款',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true});
+  for(const cash of ['现金减1000份','现金减1e3','现金不动，但现金减1000元']){
+    const question='更新科创持仓为200份，'+cash;
+    const result=await bind(question,'invalid-balance-cash').setHoldingBalance({query:'科创',quantity:200,cashDelta:-1000,evidence:question});
+    assert.equal(result.status,'needs_information');assert.match(result.question,/现金/);
+  }
+  assert.deepEqual(store.state({raw:true}),before);
+});
+test('校准持仓和现金原子提交，现金不足或凭据失败不改任何字段',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true});
+  const question='将科创持仓更新为200份，单位成本1.5元，现金减1000元',args={query:'科创',quantity:200,averageCost:1.5,cashDelta:-1000,evidence:question};
+  store.db.exec("CREATE TRIGGER reject_balance BEFORE INSERT ON ledger_entries BEGIN SELECT RAISE(ABORT,'balance receipt failure'); END");
+  await assert.rejects(bind(question,'balance-rollback').setHoldingBalance(args),/balance receipt failure/);assert.deepEqual(store.state({raw:true}),before);
+  store.db.exec('DROP TRIGGER reject_balance');
+  const short='将科创持仓更新为200份，现金减10001元';
+  const result=await bind(short,'balance-no-cash').setHoldingBalance({query:'科创',quantity:200,cashDelta:-10001,evidence:short});
+  assert.equal(result.status,'needs_information');assert.match(result.question,/现金|余额/);assert.deepEqual(store.state({raw:true}),before);
 });
