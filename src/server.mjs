@@ -21,6 +21,7 @@ import { createAssistantRuns } from './assistant-runs.mjs';
 import { buildAssistantData } from './assistant-data.mjs';
 import { createLedgerService } from './ledger.mjs';
 import { fundReference, refreshFundReference } from './fund-reference.mjs';
+import { stockMarketData, refreshStockMarketData } from './stock-market-data.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = (res, value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -145,6 +146,8 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         if (path === '/api/market/refresh' && req.method === 'POST') { await body(req); const result = await updateNAV({ retryFailed: true, force: true }); return json(res, { result, ...view() }); }
         if(path==='/api/market/fund-reference'&&req.method==='GET')return json(res,fundReference(store,url.searchParams.get('id')));
         if(path==='/api/market/fund-reference/refresh'&&req.method==='POST'){const input=await body(req);return json(res,await refreshFundReference(store,input.id));}
+        if(path==='/api/market/stock-data'&&req.method==='GET')return json(res,stockMarketData(store,url.searchParams.get('id')));
+        if(path==='/api/market/stock-data/refresh'&&req.method==='POST'){const input=await body(req);return json(res,await refreshStockMarketData(store,input.id));}
         if (path === '/api/market/search' && req.method === 'GET') return json(res, await searchSecurities(store, url.searchParams.get('q'), url.searchParams.get('market') || 'ALL'));
         if (path === '/api/market/quote' && req.method === 'POST') { const s=security(await body(req)); await refreshStocks(store,{keys:[s.key],force:true}); return json(res,{quote:store.getKV('stock_quote:'+s.key),attempt:store.getKV('stock_attempt:'+s.key)}); }
         if (path === '/api/market/history' && req.method === 'GET') {
@@ -225,7 +228,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         return json(res, { error: '接口不存在' }, 404);
       }
       if (!['GET','HEAD'].includes(req.method)) return json(res, { error: '方法不支持' }, 405);
-      const files = { '/': ['index.html','text/html'], '/index.html': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/markets.js': ['markets.js','text/javascript'], '/monthly-performance.js': ['monthly-performance.js','text/javascript'], '/watchboard.js': ['watchboard.js','text/javascript'], '/fund-reference.js': ['fund-reference.js','text/javascript'], '/watchboard-logos.js': ['watchboard-logos.js','text/javascript'], '/logos/LICENSE.txt': ['logos/LICENSE.txt','text/plain'], '/sse.js': ['sse.js','text/javascript'], '/styles.css': ['styles.css','text/css'], '/favicon.svg': ['favicon.svg','image/svg+xml'] };
+      const files = { '/': ['index.html','text/html'], '/index.html': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/markets.js': ['markets.js','text/javascript'], '/monthly-performance.js': ['monthly-performance.js','text/javascript'], '/watchboard.js': ['watchboard.js','text/javascript'], '/fund-reference.js': ['fund-reference.js','text/javascript'], '/stock-market.js': ['stock-market.js','text/javascript'], '/watchboard-logos.js': ['watchboard-logos.js','text/javascript'], '/logos/LICENSE.txt': ['logos/LICENSE.txt','text/plain'], '/sse.js': ['sse.js','text/javascript'], '/styles.css': ['styles.css','text/css'], '/favicon.svg': ['favicon.svg','image/svg+xml'] };
       const file = files[path] || (/^\/logos\/[a-z0-9-]+\.svg$/.test(path)&&existsSync(join(root,'public',path.slice(1)))?[path.slice(1),'image/svg+xml']:null); if (!file) return json(res, { error: '页面不存在' }, 404);
       const data = await readFile(join(root,'public',file[0])); res.writeHead(200, { 'Content-Type': file[1] + '; charset=utf-8', 'Cache-Control': 'no-cache' }); res.end(req.method === 'HEAD' ? undefined : data);
     } catch (error) { if (!res.headersSent) json(res, { error: error.status && error.status >= 500 ? '服务暂不可用' : error.message || '请求失败' }, error.status || 400); else res.end(); }

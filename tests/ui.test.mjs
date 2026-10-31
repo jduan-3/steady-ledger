@@ -11,13 +11,14 @@ import { marketPageHTML,marketBriefsHTML } from '../public/markets.js';
 import { monthlyPageHTML } from '../public/monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from '../public/watchboard.js';
 import { fundReferenceHTML } from '../public/fund-reference.js';
+import { stockMarketHTML } from '../public/stock-market.js';
 
 // Pure rendering/event tests over local source; no browser or running page access.
 function componentHarness(fetch) {
   const nodes=new Map(),listeners={};
   const node=()=>({innerHTML:'',textContent:'',classList:{add(){},remove(){}},addEventListener(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});
   class Form {constructor(id,fields){this.actualId=id;this.id={name:'id'};this.fields=fields;} getAttribute(){return this.actualId;} querySelectorAll(){return [];} }
-  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,setTimeout:()=>0,clearTimeout(){}});
+  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,stockMarketHTML,setTimeout:()=>0,clearTimeout(){}});
   vm.runInContext(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/\nstart\(\);\s*$/,''),context);
   const state=validateState(initialState());
   context.fixture={state,metrics:calculate(state),rules:evaluate(state),history:[],reports:[],messages:[],audit:[],config:{baseUrl:'',model:'',consent:false}};

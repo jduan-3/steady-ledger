@@ -111,6 +111,18 @@ test('基金盘中参考接口需要登录，读取缓存和刷新均不改变�
   const component=await fetch(base+'/fund-reference.js');assert.equal(component.status,200);assert.match(await component.text(),/fundReferenceHTML/);
 });
 const toolReply=(name,args)=>({role:'assistant',content:null,tool_calls:[{id:'call_test',type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+test('股票图表接口需要登录，缓存刷新独立于正式估值和账本',async t=>{
+  const {request,app,base}=await setup(t);
+  assert.equal((await request('/market/stock-data?id=stock')).status,401);assert.equal((await request('/market/stock-data/refresh','POST',{id:'stock'})).status,401);
+  await request('/auth/setup','POST',{password:'test-stock-market-password'});
+  const state=app.store.state();state.assets=[{id:'stock',name:'Synthetic stock',type:'stock',currency:'HKD',value:100,quantity:1,unit:'股',asOf:'2026-10-30',security:{market:'HK',symbol:'00700'}}];app.store.save(state,state.revision);
+  const official={key:'HK.00700',price:100,currency:'HKD',date:'2026-10-30'};app.store.setKV('stock_quote:HK.00700',official);app.store.setKV('stock_market_data:HK.00700',{attemptedAt:new Date().toISOString(),quote:{key:'HK.00700',price:120,currency:'HKD',time:'2026-10-30 16:08:00'},errors:{}});
+  const before=app.store.state({raw:true}),audit=app.store.audit(),history=app.store.history();
+  for(const result of [await request('/market/stock-data?id=stock'),await request('/market/stock-data/refresh','POST',{id:'stock'})]){assert.equal(result.status,200);assert.equal(result.body.quote.price,120);assert.equal(result.body.instrument.timeZone,'Asia/Hong_Kong');assert.match(result.body.notice,/不产生交易或现金变动/);}
+  assert.equal((await request('/market/stock-data?id=missing')).status,404);assert.equal((await request('/market/stock-data/refresh','POST',{id:'missing'})).status,404);
+  assert.deepEqual(app.store.state({raw:true}),before);assert.deepEqual(app.store.audit(),audit);assert.deepEqual(app.store.history(),history);assert.deepEqual(app.store.getKV('stock_quote:HK.00700'),official);assert.equal(app.store.ledgerEntries().length,0);
+  const component=await fetch(base+'/stock-market.js');assert.equal(component.status,200);assert.match(await component.text(),/stockMarketHTML/);
+});
 test('自然语言记账先追问资金来源，后续确认额外投入后通过 harness 更新持仓且不扣现金',async t=>{
   const original='我在2026-10-29加了1000元科创';
   const upstream=await modelServer(t,(payload,n)=>{

@@ -3,6 +3,7 @@ import { marketPageHTML, marketBriefsHTML } from './markets.js';
 import { monthlyPageHTML } from './monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from './watchboard.js';
 import { fundReferenceHTML } from './fund-reference.js';
+import { stockMarketHTML } from './stock-market.js';
 
 function adviceText(value) {
   return String(value??'').replace(/\r\n?/g,'\n')
@@ -390,20 +391,22 @@ function paintFundReference(view) {
   if(view.referenceMode==='intraday'&&!reference?.intraday?.points?.length&&reference?.history?.points?.length)view.referenceMode='daily';
   const points=(view.referenceMode==='daily'?reference?.history:reference?.intraday)?.points||[];
   const index=view.referencePoint==null?null:points.findIndex(point=>(point.time||point.date)===view.referencePoint);
-  $('#fund-reference-view').innerHTML=fundReferenceHTML(reference,{mode:view.referenceMode,selectedIndex:index<0?null:index,loading:view.referenceBusy,error:view.referenceError});
+  const render=view.asset.type==='stock'?stockMarketHTML:fundReferenceHTML;
+  $('#fund-reference-view').innerHTML=render(reference,{mode:view.referenceMode,selectedIndex:index<0?null:index,loading:view.referenceBusy,error:view.referenceError});
 }
 function scheduleFundReference(view) {
   clearTimeout(view.referenceTimer);
-  if(activePriceHistory!==view||!$('#dialog').open||!view.referenceData?.reference)return;
+  if(activePriceHistory!==view||!$('#dialog').open||!(view.referenceData?.reference||view.referenceData?.instrument))return;
   view.referenceTimer=setTimeout(()=>{if(document.visibilityState==='hidden')scheduleFundReference(view);else void loadFundReference(view);},60000);
 }
 async function loadFundReference(view,{initial=false}={}) {
   if(view.referenceBusy||activePriceHistory!==view||!$('#dialog').open)return;
   view.referenceBusy=true;view.referenceError='';paintFundReference(view);
+  const path=view.asset.type==='stock'?'/market/stock-data':'/market/fund-reference';
   try{
-    if(initial){view.referenceData=await api('/market/fund-reference?id='+encodeURIComponent(view.asset.id));paintFundReference(view);}
-    if(!initial||view.referenceData?.reference)view.referenceData=await api('/market/fund-reference/refresh',{method:'POST',body:{id:view.asset.id}});
-  }catch(error){view.referenceError=error.name==='TypeError'?(view.referenceData?.reference?'暂时无法更新参考行情，保留已有数据。':'暂时无法读取参考行情，请重试。'):error.message;}
+    if(initial){view.referenceData=await api(path+'?id='+encodeURIComponent(view.asset.id));paintFundReference(view);}
+    if(!initial||view.referenceData?.reference||view.referenceData?.instrument)view.referenceData=await api(path+'/refresh',{method:'POST',body:{id:view.asset.id}});
+  }catch(error){view.referenceError=error.name==='TypeError'?(view.referenceData?.reference||view.referenceData?.instrument?'暂时无法更新行情，保留已有数据。':'暂时无法读取行情，请重试。'):error.message;}
   finally{view.referenceBusy=false;paintFundReference(view);scheduleFundReference(view);}
 }
 async function priceHistoryDialog(id){
@@ -416,7 +419,7 @@ async function priceHistoryDialog(id){
     if(activePriceHistory!==view||!$('#dialog').open||!$('#price-history-view'))return;
     view.items=items.filter(q=>Number.isFinite(q.price)&&q.price>0&&/^\d{4}-\d{2}-\d{2}$/.test(q.date)&&Number.isFinite(Date.parse(q.date))).sort((a,b)=>b.date.localeCompare(a.date));
     $('#price-history-view').innerHTML=`<section id="price-history-chart">${priceHistoryChartHTML(a,view.items)}</section><div id="instrument-basics">${instrumentBasicsHTML(a,null)}</div>${view.items.length?`<details class="history-records"><summary>逐日明细 <span>${view.items.length} 条记录</span></summary><div class="table-scroll"><table><thead><tr><th>日期</th><th>${a.type==='fund'?'单位净值':'价格'}</th><th>涨跌幅</th></tr></thead><tbody>${view.items.map(q=>{const pct=quotePercent(q);return `<tr><td>${esc(q.date)}</td><td>${quoteNumber(q.price)} ${esc(q.currency)}</td><td class="${pct===null?'muted':movementClass(pct)}">${pct===null?'—':signed(pct)+'%'}</td></tr>`;}).join('')}</tbody></table></div></details>`:''}<p class="instrument-note history-footnote">按披露日／交易日保存，最多展示最近 60 条记录。价格变化不代表你的实际投资收益。</p>`;
-    if(a.type==='fund'){$('#price-history-view').innerHTML+=`<section id="fund-reference-view" class="fund-reference">${fundReferenceHTML(null)}</section>`;void loadFundReference(view,{initial:true});}
+    if(a.type==='fund'||a.type==='stock'&&a.security){$('#price-history-view').innerHTML+=`<section id="fund-reference-view" class="fund-reference">${a.type==='stock'?stockMarketHTML(null):fundReferenceHTML(null)}</section>`;void loadFundReference(view,{initial:true});}
     await loadInstrumentDetails(view);
   } catch(error) {
     if(activePriceHistory===view&&$('#dialog').open&&$('#price-history-view'))$('#price-history-view').innerHTML=`<p class="instrument-status" role="alert">${esc(error.message)}</p>${button('asset-price-history','重新读取','refresh','secondary',`data-id="${esc(id)}"`)}`;

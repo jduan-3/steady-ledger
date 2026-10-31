@@ -5,6 +5,7 @@ import { monthlyPerformance } from './monthly-performance.mjs';
 import { watchboard } from './watchboard.mjs';
 import { readMarketBriefs } from './market-briefs.mjs';
 import { fundReference, fundReferenceSummary } from './fund-reference.mjs';
+import { stockMarketData, stockMarketSummary } from './stock-market-data.mjs';
 
 export const PAGE_NAMES = {
   dashboard:'财务总览', assets:'资产与负债', cashflow:'收入与计划',
@@ -23,6 +24,7 @@ export function buildAssistantData(store, state = store.state()) {
   }
   const ai=Object.fromEntries(['baseUrl','model','hasKey','consent','includeHoldings','includePageData','allowLedgerWrites','includeHistory','useTools','autoReport','marketBriefsAI','requestTimeoutSeconds','connection'].map(key=>[key,config[key]]));
   const references=state.assets.filter(a=>a.type==='fund').map(a=>fundReference(store,a.id));
+  const stockMarkets=state.assets.filter(a=>a.type==='stock').map(a=>stockMarketData(store,a.id));
   return structuredClone({capturedAt:new Date().toISOString(),revision:state.revision,isDemo:state.isDemo,pages:{
     dashboard:{metrics,rules:evaluate(state,metrics),history,valuation:dailyValuation(state,metrics,history)},
     assets:{assets:state.assets,debts:state.debts,allocations,ledgerEntries:store.ledgerEntries()},
@@ -32,8 +34,8 @@ export function buildAssistantData(store, state = store.state()) {
     settings:{policy:state.policy,preferences:state.preferences,ai,audit:store.audit()},
     instruments:{items:state.assets.filter(a=>a.security||a.fund?.code).map(a=>{
       const key=a.security?.key||'FUND.'+a.fund.code,details=a.type==='stock'?store.getKV('stock_details:'+key):null;
-      return {assetId:a.id,name:a.name,key,type:a.type,valuation:a.valuation||null,investment:a.investment||null,priceHistory:store.priceHistory(key),...(a.type==='fund'?{marketReference:fundReferenceSummary(references.find(r=>r.assetId===a.id))}:{}),details:details?{...details,status:'cached',note:'已保存的基础资料；可用 get_instrument_details 核对更新。'}:null};
-    }),referenceMinutes:references.flatMap(r=>(r.intraday?.points||[]).map(point=>({assetId:r.assetId,referenceKey:r.reference.key,date:r.intraday.date,...point}))),referenceHistory:references.flatMap(r=>(r.history?.points||[]).map(point=>({assetId:r.assetId,referenceKey:r.reference.key,basis:r.history.basis,...point})))}
+      return {assetId:a.id,name:a.name,key,type:a.type,valuation:a.valuation||null,investment:a.investment||null,priceHistory:store.priceHistory(key),...(a.type==='fund'?{marketReference:fundReferenceSummary(references.find(r=>r.assetId===a.id))}:{}),...(a.type==='stock'?{marketData:stockMarketSummary(stockMarkets.find(r=>r.assetId===a.id))}:{}),details:details?{...details,status:'cached',note:'已保存的基础资料；可用 get_instrument_details 核对更新。'}:null};
+    }),referenceMinutes:references.flatMap(r=>(r.intraday?.points||[]).map(point=>({assetId:r.assetId,referenceKey:r.reference.key,date:r.intraday.date,...point}))),referenceHistory:references.flatMap(r=>(r.history?.points||[]).map(point=>({assetId:r.assetId,referenceKey:r.reference.key,basis:r.history.basis,...point}))),stockMinutes:stockMarkets.flatMap(r=>(r.intraday?.points||[]).map(point=>({assetId:r.assetId,key:r.instrument.key,currency:r.instrument.currency,timeZone:r.instrument.timeZone,date:r.intraday.date,...point}))),stockHistory:stockMarkets.flatMap(r=>(r.history?.points||[]).map(point=>({assetId:r.assetId,key:r.instrument.key,currency:r.instrument.currency,basis:r.history.basis,...point})))}
   }});
 }
 
@@ -44,7 +46,7 @@ export function automaticPageContext(snapshot) {
     if(Array.isArray(value))return value.map(compact);
     if(!value||typeof value!=='object')return value;
     return Object.fromEntries(Object.entries(value).map(([key,item])=>[
-      key,['history','priceHistory','referenceMinutes','referenceHistory'].includes(key)&&Array.isArray(item)?{count:item.length,latest:item.at(-1)||null,readWith:'get_page_data'}:compact(item)
+      key,['history','priceHistory','referenceMinutes','referenceHistory','stockMinutes','stockHistory'].includes(key)&&Array.isArray(item)?{count:item.length,latest:item.at(-1)||null,readWith:'get_page_data'}:compact(item)
     ]));
   };
   const pages=compact(snapshot.pages),reports=snapshot.pages.reports;

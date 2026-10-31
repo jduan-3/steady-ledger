@@ -4,6 +4,7 @@ import { searchSecurities, refreshStocks } from './market.mjs';
 import { security, isoDay, marketDay } from './securities.mjs';
 import { stockDetails } from './instrument-details.mjs';
 import { fundReference, fundReferenceSummary } from './fund-reference.mjs';
+import { stockMarketData, stockMarketSummary } from './stock-market-data.mjs';
 
 export function createAssistantServices(store,{refreshOverview=async()=>{},includeHoldings=false,includePageData=false,stockOptions={},detailsOptions={}}={}) {
   return {
@@ -13,7 +14,7 @@ export function createAssistantServices(store,{refreshOverview=async()=>{},inclu
       const instrument=asset?.security?.key||(asset?.fund?.code?'FUND.'+asset.fund.code:key);
       if(!instrument)throw new Error('请提供资产编号或完整股票代码');
       const details=asset?.type==='fund'?{status:'not_applicable',message:'基金不套用个股 PE 或股息指标'}:await stockDetails(store,instrument,detailsOptions);
-      return {assetId:asset?.id||null,key:instrument,details,priceHistory:store.priceHistory(instrument),...(asset?{valuation:asset.valuation,investment:asset.investment}:{}),...(asset?.type==='fund'?{marketReference:fundReferenceSummary(fundReference(store,asset.id))}:{})};
+      return {assetId:asset?.id||null,key:instrument,details,priceHistory:store.priceHistory(instrument),...(asset?{valuation:asset.valuation,investment:asset.investment}:{}),...(asset?.type==='fund'?{marketReference:fundReferenceSummary(fundReference(store,asset.id))}:{}),...(asset?.type==='stock'?{marketData:stockMarketSummary(stockMarketData(store,asset.id))}:{})};
     }}:{}),
     async getMarketData({market,date}) {
       if(!['US','HK'].includes(market))throw new Error('请选择美国或港股市场');
