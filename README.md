@@ -50,7 +50,7 @@ Local bookkeeping requires a separate opt-in and explicit instructions. The assi
 
 ## Market data
 
-Stock quotes use Tencent public market data and optional local Futu OpenD access. Fund valuations use published unit NAVs from Eastmoney. Market dashboards also use public macro and sentiment sources. Data may be delayed; the app keeps source timestamps, retains cached values on failure, and leaves unavailable values empty.
+Stock quotes use Tencent public market data and optional local Futu OpenD access. Fund valuations use published unit NAVs from Eastmoney. Market dashboards also use Cboe daily VIX closes, Tencent Hang Seng volatility quotes, and public US macro sources. Data may be delayed; the app keeps source timestamps, retains cached values on failure, and leaves unavailable values empty.
 
 Stock and fund-reference charts show intraday prices, up to 60 unadjusted daily bars, and volume. Prices and turnover amounts retain their source currency. Volume bars use red for rising prices, blue for falling prices, and gray for unchanged prices or a missing comparison price; colors do not identify buying or selling. A reference ETF's market price is separate from the fund's published NAV.
 
@@ -85,6 +85,7 @@ Source code lives in `src/`, browser assets in `public/`, and tests in `tests/`.
 
 ## Documentation
 
+- [Market data sources and freshness](docs/market-data-sources.md)
 - [Stock market data](docs/stock-market-data.md)
 - [Fund reference mappings and data](docs/fund-reference-data.md)
 - [Market summary format](docs/market-summary-format.md)

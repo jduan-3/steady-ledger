@@ -19,7 +19,7 @@ export function marketBriefFacts(store,market) {
   if(!indices.length)return null;
   const sectors=view.sectors.filter(d=>d.quote?.date===view.date&&Number.isFinite(d.quote.percent)).map(d=>({key:d.key,name:d.name,date:d.quote.date,percent:d.quote.percent}));
   const holdings=view.holdings.filter(h=>h.amount!=null),revision=store.state({raw:true}).revision;
-  const recap=marketRecap({market,date:view.date,indices,sectors,sectorTotal:view.sectors.length,volatility:view.volatility?.quote,sentiment:store.getKV('markets_snapshot',{}).sentiment});
+  const recap=marketRecap({market,date:view.date,indices,sectors,sectorTotal:view.sectors.length,volatility:view.volatility?.quote,sentiment:null});
   const publicLines=recap.sections.map(s=>`${s.label}：${s.text}`);
   const personalLine=view.portfolio.amount==null?null:`你的${market==='US'?'美股':'港股'}按当前股数估算${signed(view.portfolio.amount)}${view.portfolio.currency==='USD'?'美元':'港元'}，覆盖${view.portfolio.covered}/${view.portfolio.total}项。`;
   return {market,date:view.date,snapshotRevision:revision,headline:recap.headline,publicLines,personalLine,indices:recap.indices,sectors:recap.sectors,

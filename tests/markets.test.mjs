@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {openStore} from '../src/store.mjs';
-import {MARKET_SERIES,normalizeMarketQuote,parseMarketQuotes,parseMarketHistory,parseFearGreed,refreshMarketOverview,marketOverview} from '../src/markets.mjs';
+import {MARKET_SERIES,normalizeMarketQuote,parseMarketQuotes,parseMarketHistory,parseVIXHistory,refreshMarketOverview,marketOverview} from '../src/markets.mjs';
 import {marketPageHTML} from '../public/markets.js';
 import {marketBriefFacts} from '../src/market-briefs.mjs';
 import {BUFFETT_SERIES} from '../src/buffett.mjs';
@@ -25,17 +25,18 @@ test('index identities, timestamps and positive prices are validated; missing pr
  assert.equal(normalizeMarketQuote(quote(def.key,110,100,'2026-10-23 16:01:00.123'),def,now).time,'2026-10-23 16:01:00');
  assert.equal(parseMarketHistory({code:0,data:{'us.INX':{day:[['2026-10-23','100','110']]}}},def,now)[0].previous,null);
 });
-test('CNN validates genuine scores, preserves zero, and rejects future or fabricated out-of-range readings',()=>{
- const payload={fear_and_greed:{score:0,rating:'extreme fear',timestamp:'2026-10-23T20:00:00Z',previous_close:5}};
- assert.equal(parseFearGreed(payload,now).score,0);assert.equal(parseFearGreed(payload,now).rating,'极度恐惧');
- for(const score of [null,'',101,-1])assert.throws(()=>parseFearGreed({fear_and_greed:{...payload.fear_and_greed,score}},now));
- assert.throws(()=>parseFearGreed({fear_and_greed:{...payload.fear_and_greed,timestamp:'2026-10-26'}},now));
+test('Cboe VIX 只接收有效且已收盘的日期，排序去重，保留真实前收并拒绝错误格式',()=>{
+ const csv='DATE,OPEN,HIGH,LOW,CLOSE\n10/23/2026,20,21,18,19.42\n10/22/2026,20,21,18,18\n10/23/2026,20,21,18,19.45\n10/26/2026,20,21,18,20\n02/30/2026,1,1,1,1\n10/21/2026,0,0,0,0';
+ const rows=parseVIXHistory(csv,now);assert.deepEqual(rows.map(r=>r.date),['2026-10-22','2026-10-23']);assert.equal(rows.at(-1).price,19.45);assert.equal(rows.at(-1).previous,18);assert.match(rows.at(-1).source,/Cboe/);
+ assert.throws(()=>parseVIXHistory('DATE,CLOSE\n10/23/2026,20',now));
+ assert.throws(()=>parseVIXHistory('DATE,OPEN,HIGH,LOW,CLOSE\n10/26/2026,1,1,1,1',now));
+ assert.equal(parseVIXHistory(csv,new Date('2026-10-26T17:00:00Z')).at(-1).date,'2026-10-23');
 });
-test('refresh caches public fallback, reports CNN restrictions and OpenD status without modifying holdings or calling AI',async t=>{
+test('refresh caches public fallback and OpenD status without contacting retired sources or modifying holdings',async t=>{
  const s=setup(t),before=s.state({raw:true});let calls=0;
  const provider=async()=>{calls++;return {global:{qot_logined:true},calendars:{},quotes:[],history:[]};};
  const a=await refreshMarketOverview(s,{provider,fetchImpl:dataFetch(),now});
- assert.equal(a.opend.connected,true);assert.match(a.sentiment.error,/418/);assert.equal(a.sentiment.score,undefined);
+ assert.equal(a.opend.connected,true);assert.equal(a.sentiment,null);
  let view=marketOverview(s,'US',now);assert.equal(view.date,'2026-10-23');assert.equal(view.benchmarks[0].quote.price,110);
  await refreshMarketOverview(s,{provider,fetchImpl:dataFetch(),now,force:true});assert.equal(calls,1);assert.deepEqual(s.state({raw:true}),before);
  const html=marketPageHTML('US',view);assert.match(html,/美国市场/);assert.ok(!html.includes('CNN Fear'));assert.match(html,/美国行业表现/);assert.ok(!/NaN|Infinity/.test(html));
@@ -117,7 +118,7 @@ test('current-share portfolio movement reconciles and unavailable stocks do not 
  s.setKV('stock_quote:US.SYNTHA',{...quote('US.SYNTHA',95,100),date:'2026-10-23',currency:'USD'});
  await refreshMarketOverview(s,{provider:async()=>({global:{qot_logined:true},quotes:[quote('US..SPX'),quote('US..VIX',20,19,'2026-09-15 16:01:00')]}),fetchImpl:dataFetch(),now});
  const v=marketOverview(s,'US',now);assert.equal(v.portfolio.amount,-35);assert.equal(v.portfolio.covered,1);assert.equal(v.portfolio.total,2);assert.equal(v.holdings[1].amount,null);
- assert.ok(!marketPageHTML('US',v).includes('VIX 波动率'));assert.ok(!marketPageHTML('US',v).includes('2026-09-15'));assert.equal(v.volatility.quote.date,'2026-09-15');
+ assert.ok(!marketPageHTML('US',v).includes('VIX 波动率'));assert.ok(!marketPageHTML('US',v).includes('2026-09-15'));assert.equal(v.volatility.quote,null);
 });
 
 test('没有行业涨跌数据时显示说明而非空白行业方块，真实零涨跌仍正常展示',()=>{
@@ -135,13 +136,13 @@ test('市场刷新自动计算官方季度估值，页面只显示有效指标�
  const view=marketOverview(s,'US',now);assert.equal(view.buffett.percent,200);assert.equal(view.buffett.period,'2026 Q2');assert.deepEqual(s.state({raw:true}),before);
  let html=marketPageHTML('US',view);assert.match(html,/巴菲特指标/);assert.match(html,/2026 Q2 · 季度估值/);assert.match(html,/200.00/);assert.match(html,/40.00 万亿美元/);assert.match(html,/计算口径与来源/);assert.ok(!html.includes('CNN Fear'));assert.ok(!html.includes('VIX 波动率'));
  assert.equal(marketOverview(s,'HK',now).buffett,null);assert.ok(!marketPageHTML('HK',marketOverview(s,'HK',now)).includes('巴菲特指标'));
- view.sentiment={date:view.latestDate,score:0,rating:'极度恐惧'};view.volatility={latest:{date:view.latestDate,price:18}};html=marketPageHTML('US',view);assert.match(html,/CNN Fear/);assert.match(html,/VIX 波动率/);
+ view.sentiment={date:view.latestDate,score:0,rating:'极度恐惧'};view.volatility={latest:{date:view.latestDate,price:18}};html=marketPageHTML('US',view);assert.ok(!html.includes('CNN Fear'));assert.match(html,/VIX 波动率/);
  view.sentiment.error='fetch failed';view.volatility.latest.date='2026-09-15';html=marketPageHTML('US',view);assert.ok(!html.includes('CNN Fear'));assert.ok(!html.includes('VIX 波动率'));assert.ok(!html.includes('2026-09-15'));
 });
 
 test('市场页面展示宏观观测日期和独立来源，不再绘制单独的个股图表与估值表',()=>{
  const view={market:'HK',date:'2026-10-28',benchmarks:[],sectors:[],holdings:[],summary:'Waiting',latestHoldings:[{name:'Synthetic holding',key:'HK.00001',date:'2026-10-27',source:'Futu OpenD',fundamentals:{peTTM:-5,pb:1.2,dividendYieldTTM:0}}],context:[{name:'1 个月 HIBOR',unit:'%',value:3,date:'2026-09-30',previousDate:'2026-09-29',change:.1,status:'lagged',lagDays:28,note:'港元短期资金成本',source:'香港金管局',url:'https://www.hkma.gov.hk/',history:[{date:'2026-09-29',value:2.9},{date:'2026-09-30',value:3}]}]};
- const html=marketPageHTML('HK',view);assert.match(html,/宏观与风险温度/);assert.match(html,/来源滞后 28 天/);assert.match(html,/2026-09-30/);assert.match(html,/较 2026-09-29 \+0.10 百分点/);assert.ok(!html.includes('market-fundamentals'));assert.ok(!html.includes('market-holdings'));assert.ok(!html.includes('我的港股持仓变动'));
+ const html=marketPageHTML('HK',view);assert.match(html,/宏观与风险温度/);assert.match(html,/超过 7 天/);assert.ok(!html.includes('2026-09-30'));assert.ok(!html.includes('较 2026-09-29'));assert.ok(!html.includes('market-fundamentals'));assert.ok(!html.includes('market-holdings'));assert.ok(!html.includes('我的港股持仓变动'));
 });
 
 test('OpenD 成交量与估值字段保留真实零，拒绝负成交量，盘中成交不混入收盘量比',async t=>{
@@ -171,4 +172,41 @@ test('细分主题扩充到27个观察板块，跨日主题报价保留自身日
  // Both groups use the same magnitude scale: a 1% gain is light when a theme gains 4%.
  assert.match(html,/sector-up sector-level-1[^>]*aria-label="科技/);assert.match(html,/sector-up sector-level-4[^>]*aria-label="半导体/);
  assert.equal(marketOverview(s,'HK',time).industries.length,0);
+});
+
+test('官方 VIX 与腾讯恒指波动率分市场展示，停止请求失效来源并保留原始收盘日',async t=>{
+ const store=setup(t),time=new Date('2026-11-02T07:00:00Z'),urls=[];let cboeCalls=0;
+ store.setKV('markets_snapshot',{sentiment:{date:'2026-10-30',score:80},quotes:{'US..VIX':{date:'2026-09-15',price:21.67}}});
+ const fetchImpl=async url=>{
+  urls.push(url);assert.ok(!/cnn|hkma/.test(url));
+  if(url.includes('cboe')){cboeCalls++;if(cboeCalls===1)throw new Error('Temporary connection failure');return new Response('DATE,OPEN,HIGH,LOW,CLOSE\n10/29/2026,17,18,16,17.20\n10/30/2026,18,24,18,19.42');}
+  if(url.includes('qt.gtimg')){assert.ok(!url.includes('us.VIX'));return new Response(wire('us.INX','.INX',100,101,'2026-10-30 16:00:00')+wire('hkHSI','HSI',100,99,'2026/11/02 15:00:00')+wire('hkVHSI','VHSI',19.29,19.18,'2026/11/02 14:45:00'));}
+  throw new Error('Unavailable');
+ };
+ await refreshMarketOverview(store,{fetchImpl,provider:async input=>{assert.ok(!input.keys.includes('HK.VHSI'));return {quotes:[]};},now:time});
+ const us=marketOverview(store,'US',time),hk=marketOverview(store,'HK',time);
+ assert.equal(us.volatility.latest.price,19.42);assert.equal(us.volatility.latest.date,'2026-10-30');assert.equal(us.sentiment,null);
+ assert.match(marketPageHTML('US',us),/Cboe 官方 VIX 日收盘/);assert.equal(hk.volatility.latest.price,19.29);assert.match(marketPageHTML('HK',hk),/恒指波动率 VHSI/);assert.match(marketPageHTML('HK',hk),/延迟行情/);assert.deepEqual(hk.context,[]);
+ await refreshMarketOverview(store,{fetchImpl,provider:async()=>({quotes:[]}),now:new Date(time.getTime()+31*60000)});assert.equal(cboeCalls,2);
+ await refreshMarketOverview(store,{fetchImpl:async url=>{assert.ok(!/cnn|hkma|us\.VIX/.test(url));throw new Error('Offline');},provider:async()=>({quotes:[]}),now:new Date(time.getTime()+5*3600000)});
+ assert.equal(marketOverview(store,'US',time).volatility.latest.date,'2026-10-30');assert.equal(store.getKV('markets_snapshot').vix.error,'本次未取得 Cboe VIX 收盘数据');
+ assert.equal(marketOverview(store,'US',new Date('2026-11-10T07:00:00Z')).volatility.latest,null);
+});
+
+test('休市日快照不重复写成收盘，旧缓存里的周末记录也不参与成交量基线',async t=>{
+ const s=setup(t),time=new Date('2026-11-02T07:00:00Z');
+ const friday={key:'US.SPY',date:'2026-10-30',price:100,volume:100};
+ s.setKV('markets_snapshot',{histories:{'US.SPY':[friday,{...friday,date:'2026-11-01',volume:200}]}});
+ await refreshMarketOverview(s,{now:time,provider:async()=>({calendars:{US:[{time:'2026-10-30'},{time:'2026-11-02'}]},quotes:[quote('US.SPY',100,99,'2026-11-01 19:00:00')]}),fetchImpl:async()=>{throw new Error('Offline');}});
+ const activity=marketOverview(s,'US',time).activity.find(r=>r.key==='US.SPY');assert.equal(activity.closed.date,'2026-10-30');assert.equal(activity.relativeVolume,null);
+});
+
+test('Cboe 连接失败时使用 FRED 同口径 VIX 日收盘，并且较旧备源不能回退已缓存官方日期',async t=>{
+ const s=setup(t),time=new Date('2026-11-02T07:00:00Z');let fredCalls=0;
+ const fetchImpl=async url=>{if(url.includes('id=VIXCLS')){fredCalls++;return new Response('observation_date,VIXCLS\n2026-10-28,16.91\n2026-10-29,17.20');}throw new Error('Unavailable');};
+ await refreshMarketOverview(s,{now:time,provider:async()=>({quotes:[]}),fetchImpl});
+ const v=marketOverview(s,'US',time).volatility.latest;assert.equal(fredCalls,1);assert.equal(v.date,'2026-10-29');assert.equal(v.price,17.2);assert.match(v.source,/FRED/);
+ const cache=s.getKV('markets_snapshot');cache.vix.history.push({...v,date:'2026-10-30',price:19.42,source:'Cboe 官方 VIX 日收盘'});s.setKV('markets_snapshot',cache);
+ await refreshMarketOverview(s,{now:new Date(time.getTime()+5*3600000),provider:async()=>({quotes:[]}),fetchImpl});
+ assert.equal(marketOverview(s,'US',time).volatility.latest.date,'2026-10-30');assert.ok(s.getKV('markets_snapshot').vix.error);
 });

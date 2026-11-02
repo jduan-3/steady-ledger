@@ -1,0 +1,26 @@
+# 市场数据来源与更新
+
+核验日期：2026-11-02。源数据日期与抓取时间分别保留，抓取成功不表示数据日期已前进。这里只描述市场总览，不更改账本估值来源。
+
+| 数据 | 当前来源 | 更新与用途 |
+| --- | --- | --- |
+| 美股 VIX | [Cboe 官方免费历史日线](https://www.cboe.com/tradable_products/vix/vix_historical_data) | 日收盘，独立缓存 4 小时，连接失败或服务器错误最多尝试 2 次，失败后 30 分钟再检查；Cboe 连接失败时尝试 FRED 的同口径 VIXCLS，可能再晚一个披露日，标明来源与日期且不覆盖更新的官方缓存；用于波动风险观察，不能当作盘中实时 VIX 或贪婪分数 |
+| 恒指波动率 VHSI | 腾讯公开快照 `qt.gtimg.cn/q=hkVHSI` | 随市场快照每分钟检查，保留来源日期与时间；本次实测约延迟 15 分钟，页面标注延迟行情，不承诺实时；与美股 VIX 分市场展示 |
+| 美债 2 年、10 年收益率及期限利差 | FRED / H.15 | 日度观测，4 小时缓存，按来源观测日期展示 |
+| 高收益债信用利差 | ICE BofA，经 FRED | 日度观测，4 小时缓存 |
+| OFR 金融压力指数 | [美国财政部 OFR](https://www.financialresearch.gov/financial-stress-index/) | 官方明确滞后两个工作日；4 小时缓存 |
+| 巴菲特指标 | Fed Z.1 股权市值与 BEA GDP，经 FRED | 季度数据；同季度匹配，24 小时缓存；只用于长期估值 |
+
+宏观及波动率读数超过 7 个自然日时不再作为当前读数展示。宏观来源失败且尚未超期时，页面保留原始日期并提示更新失败。VIX 失败保留原始官方收盘日并提示；不回退到腾讯旧 VIX。不同交易日的波动率不混入当天行情摘要，已完成交易日的 VIX 可以独立展示其收盘日期。休市日快照不计入收盘历史与成交量基线；有交易日历时同时遵守日历。
+
+## 本次移除的来源及原因
+
+- 腾讯 `us.VIX` / `usVIX`：2026-11-02 实测返回 9 月读数 21.67，同一请求的标普指数正常到 10 月 30 日；是该品种的上游数据停止更新。现改用 Cboe 的官方 CSV，实测最新为 2026-10-30 的 19.42。停止请求腾讯美股 VIX，也不读取旧缓存作为当前 VIX。
+- CNN Fear & Greed：应用缓存错误为 HTTP 418 拒绝自动请求；本次直接请求也失败。停止自动抓取及当前展示，不增加代理、付费数据或浏览器绕过。
+- 隔夜、1 个月、3 个月 HIBOR 与银行体系总结余：原来接的是金管局 `monthly-statistical-bulletin`，实测最新观测日仍为 2026-09-30。该系列按[月度统计公报发布日程](https://www.hkma.gov.hk/eng/data-publications-and-research/data-and-statistics/monthly-statistical-bulletin/)更新，日观测频率不等于日发布频率。官方每日流动性与货币基础 API 另用 `end_of_date` 字段，本机请求返回 HTTP 405 页面，无法低成本直接取得。因此移除四项当前展示及网络请求，历史缓存保留。
+
+## 核验与复现
+
+- 只读检查 SQLite `kv` 表中 `markets_snapshot` 的源日期、尝试时间、成功时间和错误；未读取凭证。
+- 直接对比腾讯、Cboe、FRED、OFR、金管局原始响应；复现脚本为 `node work/audit-market-freshness.mjs`，实际日期、请求地址和状态保存在本机 `work/data-freshness-audit.json`。该文件不入库，不含持仓或金额。
+- `node --test tests/markets.test.mjs tests/market-context.test.mjs tests/market-briefs.test.mjs tests/market-summary.test.mjs tests/assistant-data.test.mjs` 覆盖真实日期、空值、未来值、失效来源不再请求、缓存间隔、失败回退、波动率分市场与休市日去重。
