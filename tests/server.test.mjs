@@ -111,6 +111,35 @@ test('基金盘中参考接口需要登录，读取缓存和刷新均不改变�
   const component=await fetch(base+'/fund-reference.js');assert.equal(component.status,200);assert.match(await component.text(),/fundReferenceHTML/);
 });
 const toolReply=(name,args)=>({role:'assistant',content:null,tool_calls:[{id:'call_test',type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+test('harness 将全部卖了记为清仓，并能从旧版重复追问中用南方啊接续，不重复入账',async t=>{
+  for(const recover of [false,true])await t.test(recover?'接续旧对话':'直接清仓',async t=>{
+    const original='然后我把南方全部卖了，2026-10-29成交',message=recover?'南方啊':original;
+    const upstream=await modelServer(t,(payload,n)=>{
+      if(n===1){
+        assert.match(payload.messages[0].content,/全部卖了/);
+        if(recover)assert.ok(payload.messages.some(m=>m.role==='user'&&m.content==='全部 然后变成 cash'));
+        return toolReply('record_holding_change',{query:'南方',side:'sell',quantity:999,evidence:original});
+      }
+      const output=JSON.parse(payload.messages.at(-1).content);
+      assert.equal(output.status,'applied');assert.equal(output.quantity,100);assert.equal(output.after.quantity,0);assert.equal(output.after.cash,10200);
+      return {content:'南方已按当日净值估算清仓，现金增加200元。'};
+    });
+    const {request,app}=await setup(t,{disableAuth:true}),state=app.store.state(),date='2026-10-29';
+    state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:10000,asOf:date},{id:'south',name:'南方基金',type:'fund',fund:{code:'008164',autoNav:true},currency:'CNY',value:200,quantity:100,unit:'份',asOf:date,costBasis:{amount:100,quantity:100,currency:'CNY'}}];
+    app.store.save(state,state.revision);app.store.setKV('fund_nav:008164',{date,price:2,basis:'unit_nav',currency:'CNY'});
+    await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
+    const config=app.store.config(),conversation=app.store.createConversation(config.scopeId,original);
+    if(recover){
+      const metadata={aiChat:true,scopeId:config.scopeId,conversationId:conversation.id,toolCalls:[{name:'record_holding_change',status:'complete',output:{status:'needs_information'}}]};
+      app.store.addConversation(original,'这笔的金额或股数／份额是多少？请核对数字的用途和单位。',state.revision,metadata);
+      app.store.addConversation('全部 然后变成 cash','这笔要更新哪项记录、具体缺少的内容是什么？请结合本次对话已确认的信息核对。',state.revision,metadata);
+    }
+    const input={message,conversationId:conversation.id,requestId:'sell-south-all'},result=await request('/chat','POST',input);
+    assert.equal(result.status,200);assert.equal(result.body.state.assets[1].quantity,0);assert.equal(result.body.state.assets[0].value,10200);assert.equal(result.body.ledgerEntries.length,1);
+    assert.equal(result.body.messages.at(-1).metadata.toolCalls[0].output.status,'applied');assert.equal(upstream.calls.length,2);
+    const replay=await request('/chat','POST',input);assert.equal(replay.status,200);assert.equal(replay.body.state.assets[0].value,10200);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,2);
+  });
+});
 test('股票图表接口需要登录，缓存刷新独立于正式估值和账本',async t=>{
   const {request,app,base}=await setup(t);
   assert.equal((await request('/market/stock-data?id=stock')).status,401);assert.equal((await request('/market/stock-data/refresh','POST',{id:'stock'})).status,401);

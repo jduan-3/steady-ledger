@@ -152,6 +152,72 @@ test('清仓可使用已登记的完整份额，多现金账户不能由模型�
   const result=await holding('我今天用现有现金买入1000元科创',{cashAssetId:'cash-two'},'multi-cash');assert.equal(result.status,'needs_information');assert.equal(store.state().assets.find(a=>a.id==='cash-two').value,5000);
 });
 
+test('全部卖了等口语清仓使用已登记份额，忽略模型从页面带入的金额或份额',async t=>{
+  for(const [i,question] of ['然后我把南方全部卖了','我把南方都卖了','南方全卖了','南方卖光了','南方卖完了','卖出全部南方'].entries()){
+    const {store,bind}=setup(t),state=store.state();state.assets[1].name='南方基金';store.save(state,state.revision);
+    const args={query:'南方',side:'sell',evidence:question,...(i%2?{amount:999}:{quantity:999})};
+    const result=await bind(question,'sell-all-'+i).recordHoldingChange(args);
+    assert.equal(result.status,'applied',question);assert.equal(result.quantity,100);assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);assert.equal(result.after.cost,0);
+    const revision=store.state().revision;
+    assert.equal((await bind(question,'sell-all-'+i).recordHoldingChange(args)).replayed,true);assert.equal(store.state().revision,revision);assert.equal(store.ledgerEntries().length,1);
+  }
+});
+
+test('全部变成 cash 与南方啊能连续承接未完成卖出，保留原日期和标的',async t=>{
+  const {store,bind}=setup(t),state=store.state();state.assets[1].name='南方基金';store.save(state,state.revision);
+  const original='然后我把南方全部卖了',reply='全部 然后变成 cash',history=[
+    {role:'user',content:original,created_at:now.toISOString()},
+    {role:'assistant',content:'这笔的金额或股数／份额是多少？请核对数字的用途和单位。'},
+    {role:'user',content:reply,created_at:now.toISOString()},
+    {role:'assistant',content:'这笔要更新哪项记录、具体缺少的内容是什么？请结合本次对话已确认的信息核对。'}
+  ];
+  const result=await bind('南方啊','recover-full-sale',{history,startedAt:now.getTime()+86400000}).recordHoldingChange({query:'南方',side:'sell',evidence:original,quantity:100});
+  assert.equal(result.status,'applied');assert.equal(result.date,date);assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);
+});
+
+test('卖出缺数量时补答全部即可入账，不能重复追问具体份额',async t=>{
+  const {bind}=setup(t),original='今天卖了科创';
+  const first=await bind(original).recordHoldingChange({query:'科创',side:'sell',evidence:original});
+  assert.equal(first.status,'needs_information');
+  const result=await bind('全部 然后变成 cash','sell-all-answer',{history:[{role:'user',content:original},{role:'assistant',content:first.question}]}).recordHoldingChange({query:'科创',side:'sell',evidence:original});
+  assert.equal(result.status,'applied');assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);
+});
+
+test('清仓补答不承接已入账、待入账或无关对话，也不能绕过否定与假设',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),original='今天卖了科创';
+  for(const status of ['applied','pending']){
+    const history=[{role:'user',content:original},{role:'assistant',content:'这笔金额或份额是多少？',metadata:{toolCalls:[{name:'record_holding_change',output:{status}}]}}];
+    await assert.rejects(bind('全部','saved-'+status,{history}).recordHoldingChange({query:'科创',side:'sell',evidence:original}),/当前明确/);
+  }
+  for(const content of ['如果我把科创全部卖了','我没有把科创全部卖了','不要记录科创全部卖了','我不想把科创全部卖了']){
+    const history=[{role:'user',content},{role:'assistant',content:'这笔金额或份额是多少？'}];
+    await assert.rejects(bind('全部','denied-sale',{history}).recordHoldingChange({query:'科创',side:'sell',evidence:content}),/讨论或计划|被否定/);
+  }
+  await assert.rejects(bind('科创啊','unrelated-sale',{history:[{role:'user',content:original},{role:'assistant',content:'今天市场怎么样？'}]}).recordHoldingChange({query:'科创',side:'sell',evidence:original}),/当前明确/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+
+test('清仓只能从已登记份额取数量，成交价与费用仍需用户提供；名称中的全字不代表清仓',async t=>{
+  const {store,bind}=setup(t),original='今天科创全部卖了',before=store.state({raw:true});
+  for(const extra of [{price:2},{fee:1}])await assert.rejects(bind(original).recordHoldingChange({query:'科创',side:'sell',evidence:original,...extra}),/对应单位和用途/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+  const state=store.state();state.assets[1].name='全国基金';store.save(state,state.revision);
+  const question='我把全国基金卖了';assert.equal((await bind(question).recordHoldingChange({query:'全国基金',side:'sell',evidence:question})).status,'needs_information');assert.equal(store.ledgerEntries().length,0);
+});
+
+test('全部卖出仍检查唯一标的与已知份额，未披露净值时只待入账且结算一次',async t=>{
+  const {store,bind,service}=setup(t),state=store.state();state.assets[1].name='南方一号基金';
+  state.assets.push({...state.assets[1],id:'second',name:'南方二号基金'});store.save(state,state.revision);
+  const question='我把南方全部卖了',args={query:'南方',side:'sell',evidence:question,assetId:'star'};
+  assert.equal((await bind(question).recordHoldingChange(args)).status,'needs_information');assert.equal(store.ledgerEntries().length,0);
+  const unknown=store.state();unknown.assets.pop();unknown.assets[1].quantity=null;unknown.assets[1].fund.autoNav=false;store.save(unknown,unknown.revision);
+  assert.equal((await bind(question).recordHoldingChange(args)).status,'needs_information');assert.equal(store.ledgerEntries().length,0);
+  const known=store.state();known.assets[1].quantity=100;known.assets[1].fund.autoNav=true;store.save(known,known.revision);store.setKV('fund_nav:011609',null);
+  const pending=await bind(question).recordHoldingChange(args);assert.equal(pending.status,'pending');assert.equal(store.state().assets[1].quantity,100);assert.equal(store.state().assets[0].value,10000);
+  store.setKV('fund_nav:011609',{date,price:2,basis:'unit_nav',currency:'CNY'});await service.processPending();await service.processPending();
+  assert.equal(store.state().assets[1].quantity,0);assert.equal(store.state().assets[0].value,10200);assert.equal(store.ledgerEntries().length,1);
+});
+
 test('资金来源追问由服务端承接可信上一轮，即使模型拼接证据或把query写成整句也无需用户重说',async t=>{
   const {store,bind}=setup(t),original='我今天加了1000元科创，请帮我记账。',answer='这是额外投入，请按已保存的今日净值记账。';
   const result=await bind(answer,'joined-evidence',{history:[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'用现有现金还是额外投入？'}]}).recordHoldingChange({query:'今天额外投入1000元买入科创基金，按今日净值记账',evidence:original+answer,side:'buy',assetId:'star',amount:1000,cashSource:'outside'});

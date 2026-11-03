@@ -15,6 +15,8 @@ const ask=(missing,question)=>Object.assign(new Error(missing),{ledgerClarificat
 const savedLedgerAnswer=answer=>answer?.metadata?.toolCalls?.some(call=>['record_holding_change','record_cash_flow','set_holding_balance'].includes(call.name)&&['applied','pending'].includes(call.output?.status));
 const balanceRequest=/(?:更新|校准|更正|修改|调整|设置)[^。！？!?\n]{0,40}(?:持仓|份额|股数)|(?:持仓|份额|股数)[^。！？!?\n]{0,20}(?:更新|校准|更正|修改|调整|设置|改为|改成)/;
 const balanceInstruction=text=>balanceRequest.test(text)&&(!/买了|买入|加仓|申购|卖了|卖出|减仓|赎回/.test(text)||/目前持有|当前持有|现在持有|总份额|总股数|(?:持仓|份额|股数)(?:更新|改|调整|校准|设置)?(?:为|到|成|至)\s*\d/.test(text));
+const allAnswer=text=>/^(?:全部|全仓|全都|全数)(?:[，,。！!]|然后|转|变|就|$)/.test(normalize(text));
+const sellAll=text=>/清仓|卖光|卖完|(?:全部|全都|全仓|全数|所有)[^。！？!?\n]{0,20}(?:卖了|卖出|卖掉|赎回)|(?:都|全)(?:卖了|卖出|卖掉|赎回)|(?:卖了|卖出|卖掉|赎回)[^。！？!?\n]{0,20}(?:全部|全仓|所有)/.test(text)||/卖了|卖出|卖掉|赎回/.test(text)&&text.split('\n').some(allAnswer);
 function chineseNumber(text) {
   const digits={'零':0,'〇':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9},units={'十':10,'百':100,'千':1000,'万':10000,'亿':1e8};
   let total=0,part=0,n=0;
@@ -63,18 +65,19 @@ function checkCurrency(text,args,kind,currency) {
     if(currency!=='CNY'&&!currencies.includes(currency))throw ask('请明确金额、价格和费用的币种：'+currency+'；本次不自动猜测换汇','这笔金额、价格和费用的币种是'+currency+'吗？');
   }
 }
-function evidenceFor(meta,evidence,kind) {
+function evidenceFor(meta,evidence,kind,assets=[]) {
   const previous=meta.history?.at(-2),answer=meta.history?.at(-1);
   const dateAnswer=/^(?:是|就|我是)?(?:今天|昨天|昨日|前天|\d{4}-\d{2}-\d{2})(?:买的|买入的|卖的|卖出的|下单的|成交的|申购的|赎回的|的)?[。！!]?$/u.test(normalize(meta.question));
   const cashAnswer=/现有现金|额外投入|账外|外部资金|用现金|余额|^现金[。！!]?$/u.test(meta.question)&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回/.test(meta.question);
   const valueAnswer=meta.question.length<=100&&numberFacts(meta.question,'holding').some(f=>['amount','quantity'].includes(f.role))&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回|如果|假设|比如|计划/.test(meta.question);
+  const subjectAnswer=meta.question.length<=80&&assets.some(a=>['stock','fund','cash'].includes(a.type)&&mentionsHolding(a,meta.question))&&!/买了|买入|加仓|申购|卖了|卖出|卖掉|减仓|赎回|清仓|收到|支付|如果|假设|比如|计划/.test(meta.question);
   const saved=savedLedgerAnswer(answer);
   if(kind==='holding'&&previous?.role==='user'&&answer?.role==='assistant'&&!saved&&/[?？]|请.{0,20}(?:确认|提供|补充)|告诉我|还是/.test(answer.content)){
     const dateQuestion=dateAnswer&&/哪天|哪一天|日期|几号|何时|什么时候|成交日|交易日/.test(answer.content);
-    if(dateQuestion||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位/.test(answer.content)){
+    if(dateQuestion||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位/.test(answer.content)||allAnswer(meta.question)&&/金额|数量|份额|股数|单位|全部|清仓|哪项记录/.test(answer.content)||subjectAnswer&&/哪项|哪一|名称|代码|标的|记录|账户/.test(answer.content)){
       // Only adjacent answers to a clarification can extend an instruction.
       // Rebuild evidence from complete user turns, never the model's paraphrase.
-      const original=evidenceFor({...meta,question:previous.content,startedAt:Date.parse(previous.created_at)||meta.startedAt,history:meta.history.slice(0,-2)},undefined,kind);
+      const original=evidenceFor({...meta,question:previous.content,startedAt:Date.parse(previous.created_at)||meta.startedAt,history:meta.history.slice(0,-2)},undefined,kind,assets);
       return {text:original.text+'\n'+meta.question,dateText:dateQuestion?meta.question:original.dateText,at:dateQuestion?(meta.startedAt||Date.now()):original.at};
     }
   }
@@ -115,13 +118,13 @@ function mentionsHolding(asset,text) {
   for(let i=0;i<name.length-1;i++){const part=name.slice(i,i+2);if(/^[\u4e00-\u9fff]{2}$/.test(part)&&!['基金','股票','联接','指数','证券','投资','虚构','测试','账户'].includes(part)&&normalized.includes(normalize(part)))return true;}
   return false;
 }
-function authorize(meta,args,kind) {
-  const evidence=evidenceFor(meta,args.evidence,kind),text=evidence.text;
+function authorize(meta,args,kind,evidence=evidenceFor(meta,args.evidence,kind)) {
+  const text=evidence.text;
   if(!(kind==='cash'?['income','expense']:['buy','sell']).includes(args.side))throw new Error('记账方向无效');
   if(kind==='holding'&&text!==meta.question&&(args.side==='buy'&&/卖的|卖出的|赎回的/.test(meta.question)||args.side==='sell'&&/买的|买入的|申购的/.test(meta.question)))throw new Error('补答的买卖方向与原指令不一致，请重新核对');
   if(meta.question.includes(text)&&/如果|假设|举例|比如|假如/.test(meta.question))throw new Error('这是讨论或计划，尚未确认发生，不能直接记账');
   if(/如果|假设|举例|比如|打算|计划|考虑|要不要|建议|想买|想卖|准备买|准备卖|会不会|假如/.test(text))throw new Error('这是讨论或计划，尚未确认发生，不能直接记账');
-  const actions=kind==='cash'?(args.side==='income'?/收到|到账|收入|红包/:/支出|花了|付了|支付|花掉/):args.side==='buy'?/买了|买入|加了|加仓|申购|记录|记一下|记账/:/卖了|卖出|减了|减仓|赎回|清仓|记录|记一下|记账/;
+  const actions=kind==='cash'?(args.side==='income'?/收到|到账|收入|红包/:/支出|花了|付了|支付|花掉/):args.side==='buy'?/买了|买入|加了|加仓|申购|记录|记一下|记账/:/卖了|卖出|卖掉|卖光|卖完|减了|减仓|赎回|清仓|记录|记一下|记账/;
   if(!actions.test(text))throw ask('需要明确说明已经发生的买卖或收支，才能记账','你要记录已经发生的买卖，还是按最新总份额校准持仓？');
   const denied=new RegExp('(?:没有|并未|未曾|尚未|从未|没|未|并非|不是|不曾|不再|不(?!仅|但|光)|别|不要|无需|取消)[^，,。；;！？!?\\n]*?(?:'+actions.source+'|记账|记录|登记|入账)');
   if([text,meta.question].some(s=>denied.test(s)))throw new Error('买卖、收支或记账指令被否定，未修改账本；请明确实际发生的事项');
@@ -236,7 +239,12 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
       },
       async recordHoldingChange(args){
         check();if(balanceInstruction(balanceEvidenceFor(meta).text))return {status:'use_other_tool',tool:'set_holding_balance',instruction:'用户在校准总持仓，请改用 set_holding_balance，quantity 使用用户提供的总份额，averageCost 使用用户提供的单位成本，cashDelta 单独按用户原话填写；不能把份额差额当成买入。'};
-        const evidence=authorize(meta,args,'holding'),state=store.state({raw:true});
+        const state=store.state({raw:true}),source=evidenceFor(meta,args.evidence,'holding',state.assets);
+        const fullSale=args.side==='sell'&&sellAll(source.text)&&!numberFacts(source.text,'holding').some(f=>['amount','quantity'].includes(f.role));
+        // “全部卖了” authorizes the saved quantity, not a model-supplied number
+        // copied from the snapshot. Price and fee still require user evidence.
+        if(fullSale)args={...args,amount:undefined,quantity:undefined};
+        const evidence=authorize(meta,args,'holding',source);
         const query=args.query&&normalize(evidence.text).includes(normalize(args.query))?args.query:null;
         let matches=query?state.assets.filter(a=>['stock','fund'].includes(a.type)&&[a.name,a.security?.key,a.fund?.code].some(s=>normalize(s).includes(normalize(query)))):[];
         if(!matches.length)matches=state.assets.filter(a=>['stock','fund'].includes(a.type)&&mentionsHolding(a,evidence.text));
@@ -253,10 +261,11 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         }
         if(!asset)return need('未找到唯一持仓，请补充准确股票或基金代码');
         if(!asset.security&&!asset.fund?.code)return need('该持仓尚未登记证券代码，请补充代码');
+        const id=meta.requestId+':holding:'+asset.id,prior=store.ledgerEntry(id);
         checkCurrency(evidence.text,args,'holding',asset.currency);
-        if(args.amount==null&&args.quantity==null&&args.side==='sell'&&/清仓/.test(evidence.text))args={...args,quantity:asset.quantity};
-        if((args.amount==null)===(args.quantity==null))return need('请明确本次买卖金额或股数／份额，二者选一');
         if(!Number.isFinite(asset.quantity))return need('原持仓数量未知，请确认当前股数／份额');
+        if(fullSale)args={...args,quantity:prior?.quantity??asset.quantity};
+        if((args.amount==null)===(args.quantity==null))return need('请明确本次买卖金额或股数／份额，二者选一');
         const sourceText=evidence.text+'\n'+meta.question;
         const sourceAnswer=evidence.text;
         const affirmative=sourceAnswer.replace(/(?:不是|不用|并非|不使用)(?:用)?(?:额外(?:投入|的)?|账外资金|外部资金|新增资金|现有现金|已有现金|现金)/g,'');
@@ -276,9 +285,9 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         if(date!==expectedDate)return need('记账日期需要来自用户原话');
         if(date>nowDate(timeZone,clock()))return need('未来计划尚未发生，不能记成已完成买卖');
         if(args.price==null&&[0,6].includes(new Date(date+'T12:00:00Z').getUTCDay()))return need('该日期通常休市，请提供实际成交日或准确成交价');
-        const id=meta.requestId+':holding:'+asset.id,entry={id,requestId:meta.requestId,scopeId:meta.scopeId,generation,kind:'holding',asset,base:fingerprint(matches[0]),side:args.side,amount:args.amount??null,quantity:args.quantity??null,price:args.price??null,fee:args.fee??null,date,cashSource,cashAssetId:cash?.id||null,status:'pending',createdAt:clock().toISOString(),label:`对话记账 · ${args.side==='buy'?'加仓':'减仓'} · ${asset.name}`};
+        const entry={id,requestId:meta.requestId,scopeId:meta.scopeId,generation,kind:'holding',asset,base:fingerprint(matches[0]),side:args.side,amount:args.amount??null,quantity:args.quantity??null,price:args.price??null,fee:args.fee??null,date,cashSource,cashAssetId:cash?.id||null,status:'pending',createdAt:clock().toISOString(),label:`对话记账 · ${args.side==='buy'?'加仓':'减仓'} · ${asset.name}`};
         entry.signature=createHash('sha256').update(JSON.stringify({asset:asset.id,side:entry.side,amount:entry.amount,quantity:entry.quantity,price:entry.price,fee:entry.fee,date,cashSource,cashAssetId:entry.cashAssetId})).digest('hex');
-        const prior=store.ledgerEntry(id);if(prior)return store.postLedgerEntry(entry);
+        if(prior)return store.postLedgerEntry(entry);
         // A second pending instruction for this asset requires resolving the first
         // rather than silently adding it twice while the closing price is absent.
         const pending=store.ledgerEntries({pending:true,limit:5000}).find(e=>e.kind==='holding'&&e.asset.id===asset.id);

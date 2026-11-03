@@ -98,6 +98,16 @@ test('工具默认只显示一条紧凑提示，待入账可核对或取消，�
   h.context.update={state:{...h.context.fixture.state,revision:9},ledgerEntries:[{status:'applied'}]};h.run('applyChatData(update)');assert.equal(h.run('data.state.revision'),9);assert.equal(h.run('data.ledgerEntries[0].status'),'applied');
 });
 
+test('持仓工具按入账结果显示状态，缺信息和待入账不会显示为更新完成',()=>{
+  const h=componentHarness();
+  for(const [status,label] of Object.entries({needs_information:'待补充信息',pending:'待入账',blocked:'未更新',use_other_tool:'需切换处理',applied:'已入账'})){
+    h.context.calls=[{id:'sale',label:'更新持仓记录',name:'record_holding_change',status:'complete',args:{},output:{status}}];
+    const html=h.run('toolCallsHTML(calls)');assert.match(html,new RegExp('<small[^>]*>'+label+'</small>'));assert.doesNotMatch(html,/<small[^>]*>已完成<\/small>/);
+    if(status!=='applied')assert.doesNotMatch(html,/已完成 \d+ 项处理/);
+  }
+  assert.doesNotMatch(h.run("messageHTML({role:'assistant',content:'####\\n\\n####\\n这笔需要补充信息。'})"),/####/);
+});
+
 test('investment settings display and save the issuer cap and portfolio purchase percentage together',async()=>{
   let received;const h=componentHarness(async(_url,options)=>{received=JSON.parse(options.body);return {ok:true,json:async()=>({...h.context.fixture,state:received.state,metrics:calculate(received.state),rules:evaluate(received.state)})};});
   h.run('data.state.policy.issuerLimit=30;data.state.policy.buyTranchePercent=1;');
@@ -398,6 +408,41 @@ test('历史图表处理空、单点与平价，不画虚构走势，不产生 N
    h.context.rows=rows;const html=h.run("priceHistoryChartHTML({type:'stock',currency:'USD'},rows)");assert.ok(!/NaN|Infinity/.test(html));
    if(rows.length===1){assert.match(html,/只有 1 条/);assert.match(html,/<g class="trend-line"><\/g>/);}
  }
+});
+test('行情价格与成交量独立点选、前后切换和回到最新，不改变已保存的历史日期',async()=>{
+ const h=componentHarness();
+ h.context.marketFixture={instrument:{key:'US.SAMPLE',market:'US',currency:'USD',name:'示例股票'},quote:{date:'2026-11-02',previous:{price:100}},intraday:{date:'2026-11-02',points:[{time:'09:30',price:100,volume:10},{time:'09:31',price:102,volume:30},{time:'09:35',price:101,volume:null}]},history:{points:[{date:'2026-10-30',price:99,volume:100},{date:'2026-11-02',price:101,volume:120}]}};
+ h.run("activePriceHistory={asset:{type:'stock'},selectedDate:'2026-10-30',referenceMode:'intraday',referenceData:marketFixture,referencePoint:null,referenceVolumePoint:null};$('#dialog').open=true;paintFundReference(activePriceHistory);");
+ const click=dataset=>h.listeners.click({target:{closest:()=>({dataset})}});
+ await click({action:'fund-reference-point',chart:'price',index:'0'});
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ await click({action:'fund-reference-step',chart:'volume',step:'previous'});
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
+ let html=h.nodes.get('#fund-reference-view').innerHTML,price=html.split('data-reference-panel="price"')[1].split('</section>')[0],volume=html.split('data-reference-panel="volume"')[1].split('</section>')[0];
+ assert.match(price,/100\.000/);assert.match(price,/2026-11-02 09:30/);assert.match(volume,/30 股/);assert.match(volume,/2026-11-02 09:31/);assert.ok(!html.includes('data-fund-reference-range'));
+ await click({action:'fund-reference-step',chart:'price',step:'latest'});
+ assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
+ h.listeners.change({target:{matches:selector=>selector==='[data-fund-reference-select]',dataset:{chart:'volume'},value:'2'}});
+ assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);assert.match(h.nodes.get('#fund-reference-view').innerHTML,/该时点成交量缺失/);
+ assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-30');
+});
+test('行情独立键盘选点支持边界和最新跟随，跨交易日或切换周期不会沿用旧时点',async()=>{
+ const h=componentHarness();
+ h.run("activePriceHistory={asset:{type:'fund'},referenceMode:'intraday',referenceData:{reference:{name:'示例 ETF'},intraday:{date:'2026-11-02',points:[{time:'09:30',price:1,volume:0},{time:'09:31',price:1,volume:20}]},history:{points:[{date:'2026-10-30',price:1,volume:10},{date:'2026-11-02',price:1.1,volume:30}]}},referencePoint:null,referenceVolumePoint:null};$('#dialog').open=true;");
+ const key=(chart,key)=>h.listeners.keydown({key,preventDefault(){},target:{matches:selector=>selector==='[data-reference-chart]',dataset:{referenceChart:chart}}});
+ key('price','Home');key('price','ArrowLeft');assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ h.run("activePriceHistory.referenceData.intraday.points.push({time:'09:32',price:1.2,volume:30});paintFundReference(activePriceHistory);");
+ assert.equal(h.run("referenceChartSelection(activePriceHistory,'price').index"),0);assert.equal(h.run("referenceChartSelection(activePriceHistory,'volume').index"),2);
+ key('volume','Home');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
+ key('volume','End');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ h.run("activePriceHistory.referenceData.intraday.date='2026-11-03';paintFundReference(activePriceHistory);");
+ assert.equal(h.run("referenceChartSelection(activePriceHistory,'price').index"),2);
+ await h.listeners.click({target:{closest:()=>({dataset:{action:'fund-reference-mode',mode:'daily'}})}});
+ assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ key('volume','Home');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-10-30');assert.equal(h.run('activePriceHistory.referencePoint'),null);
+ const html=h.nodes.get('#fund-reference-view').innerHTML;assert.match(html,/各交易日的收盘价/);assert.match(html,/一个交易日的成交数量/);
+ h.run("activePriceHistory.referenceData.history.points=[{date:'2026-11-02',price:1,volume:0}];paintFundReference(activePriceHistory);");
+ assert.ok(!/NaN|Infinity/.test(h.nodes.get('#fund-reference-view').innerHTML));key('price','ArrowRight');assert.equal(h.run('activePriceHistory.referencePoint'),null);
 });
 test('基础资料区分估值倍数、股息百分比、每股金额与缺失值，并保留缓存日期',()=>{
  const h=componentHarness();h.context.details={status:'cached',currency:'HKD',source:'Futu OpenD',time:'2026-10-23 16:08:00',timeZone:'Asia/Hong_Kong',message:'保留上次记录',metrics:{peTTM:-2,pe:0,dividendYieldTTM:1.2,dividendTTM:0,marketCap:3000000000}};

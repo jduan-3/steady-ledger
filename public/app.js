@@ -12,6 +12,7 @@ function adviceText(value) {
     .replace(/^\s*(?:```|~~~).*$/gm,'')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'$1（$2）')
+    .replace(/^\s{0,3}#{1,6}\s*$/gm,'')
     .replace(/^\s{0,3}#{1,6}\s+/gm,'').replace(/^\s*>\s?/gm,'')
     .replace(/^\s*[-+*]\s+/gm,'').replace(/^\s*\d+[.)]\s+/gm,'')
     .replace(/^\s*[-*_]{3,}\s*$/gm,'')
@@ -356,7 +357,8 @@ function priceHistoryChartHTML(asset,items,selectedDate='') {
     segments.push(`<path d="M${x(a)*10} ${y(a)*2}L${x(b)*10} ${y(b)*2}"${gap?' stroke-dasharray="4 5"':''}/>`);
   }
   const pct=quotePercent(selected),axis=value=>value.toLocaleString('zh-CN',{minimumFractionDigits:high-low<.05?4:2,maximumFractionDigits:high-low<.05?4:2});
-  return `<div class="history-chart-heading"><div><h3>${fund?'单位净值走势':'股价走势'}</h3><p>${rows.length} 条已保存记录 · ${esc(asset.currency)}</p></div><label class="history-date-select"><span>选择日期</span><select data-history-date aria-label="选择记录日期">${items.map(q=>`<option value="${esc(q.date)}"${q.date===selected.date?' selected':''}>${esc(q.date)}</option>`).join('')}</select></label></div>
+  return `<div class="history-chart-heading"><div><h3>${fund?'单位净值走势':'已保存股价走势'}</h3><p>${rows.length} 条已保存记录 · ${esc(asset.currency)}</p></div><label class="history-date-select"><span>选择日期</span><select data-history-date aria-label="选择记录日期">${items.map(q=>`<option value="${esc(q.date)}"${q.date===selected.date?' selected':''}>${esc(q.date)}</option>`).join('')}</select></label></div>
+    ${!fund?'<p class="history-chart-note">这里是按交易日保存的价格记录；下方「股票行情」可分别查看价格与成交量。</p>':''}
     <div class="history-reading" aria-live="polite"><div><strong>${quoteNumber(selected.price)} <small>${esc(asset.currency)}</small></strong><span>${esc(selected.date)}${selected===rows.at(-1)?' · 最新记录':''}</span></div><div class="history-daily"><span>当日涨跌</span><b class="${pct===null?'muted':movementClass(pct)}">${pct===null?'—':signed(pct)+'%'}</b></div></div>
     <div class="trend-chart price-history-chart"><div class="trend-y-axis"><span>${axis(high)}</span><span>${axis((high+low)/2)}</span><span>${axis(low)}</span></div><div class="trend-plot"><svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path class="trend-grid" d="M0 0H1000M0 100H1000M0 200H1000"/><path class="history-guide" d="M${x(selected)*10} 0V200"/><g class="trend-line">${segments.join('')}</g></svg>${rows.map(q=>`<button type="button" class="trend-dot history-point ${q===selected?'selected':''}" style="left:${x(q)}%;top:${y(q)}%" data-action="history-point" data-date="${esc(q.date)}" aria-pressed="${q===selected}" aria-label="${esc(q.date)}，${fund?'单位净值':'股价'} ${quoteNumber(q.price)} ${esc(asset.currency)}" title="${esc(q.date)} · ${quoteNumber(q.price)} ${esc(asset.currency)}"></button>`).join('')}<div class="trend-x-axis"><span>${esc(rows[0].date)}</span>${rows.length>1?`<span>${esc(rows.at(-1).date)}</span>`:''}</div></div></div>
     <p class="history-chart-note">${rows.length===1?'目前只有 1 条记录，积累更多数据后显示连线。':gaps?'虚线表示日期间隔（含休市），不补齐中间数据。':'仅连接已保存的记录。'}${fund?'单位净值未计现金分红。':'股价未复权。'}</p>`;
@@ -385,14 +387,27 @@ function selectHistoryDate(date) {
   view.selectedDate=date;
   $('#price-history-chart').innerHTML=priceHistoryChartHTML(view.asset,view.items,date);
 }
+function referenceChartSelection(view,chart) {
+  const series=view?.referenceMode==='daily'?view?.referenceData?.history:view?.referenceData?.intraday,points=series?.points||[],field=chart==='volume'?'referenceVolumePoint':'referencePoint';
+  const index=points.findIndex(point=>(point.time?series.date+' '+point.time:point.date)===view?.[field]);
+  return {series,points,field,index:index<0?points.length-1:index};
+}
+function selectReferencePoint(chart,index,focus='chart') {
+  const view=activePriceHistory;if(!view||!['price','volume'].includes(chart)||!$('#dialog').open)return;
+  const {series,points,field}=referenceChartSelection(view,chart);
+  if(!Number.isInteger(index)||index<0||index>=points.length)return;
+  const point=points[index];
+  view[field]=index===points.length-1?null:point.time?series.date+' '+point.time:point.date;
+  paintFundReference(view);
+  $(focus==='select'?`[data-fund-reference-select][data-chart="${chart}"]`:`[data-reference-chart="${chart}"]`)?.focus?.({preventScroll:true});
+}
 function paintFundReference(view) {
   if(activePriceHistory!==view||!$('#dialog').open||!$('#fund-reference-view'))return;
   const reference=view.referenceData;
   if(view.referenceMode==='intraday'&&!reference?.intraday?.points?.length&&reference?.history?.points?.length)view.referenceMode='daily';
-  const points=(view.referenceMode==='daily'?reference?.history:reference?.intraday)?.points||[];
-  const index=view.referencePoint==null?null:points.findIndex(point=>(point.time||point.date)===view.referencePoint);
+  const {index}=referenceChartSelection(view,'price'),volume=referenceChartSelection(view,'volume');
   const render=view.asset.type==='stock'?stockMarketHTML:fundReferenceHTML;
-  $('#fund-reference-view').innerHTML=render(reference,{mode:view.referenceMode,selectedIndex:index<0?null:index,loading:view.referenceBusy,error:view.referenceError});
+  $('#fund-reference-view').innerHTML=render(reference,{mode:view.referenceMode,selectedIndex:index,volumeSelectedIndex:volume.index,loading:view.referenceBusy,error:view.referenceError});
 }
 function scheduleFundReference(view) {
   clearTimeout(view.referenceTimer);
@@ -413,7 +428,7 @@ async function priceHistoryDialog(id){
   const a=data.state.assets.find(a=>a.id===id);if(!a)return;
   clearTimeout(activePriceHistory?.referenceTimer);
   showDialog(a.name+' · 涨跌记录',a.valuation?.source||'', '<div id="price-history-view"><p class="inline-note">正在读取…</p></div>');
-  const view={asset:a,items:[],selectedDate:'',referenceMode:'intraday',referencePoint:null};activePriceHistory=view;
+  const view={asset:a,items:[],selectedDate:'',referenceMode:'intraday',referencePoint:null,referenceVolumePoint:null};activePriceHistory=view;
   try {
     const {items}=await api('/market/history?id='+encodeURIComponent(id));
     if(activePriceHistory!==view||!$('#dialog').open||!$('#price-history-view'))return;
@@ -506,9 +521,11 @@ function messageHTML(m) {
 function toolCallsHTML(calls) {
   if(!calls.length)return '';
   const json=value=>esc(JSON.stringify(value??null,null,2));
-  const group='tools-'+calls[0].id,running=calls.some(c=>c.status==='running'),waiting=calls.some(c=>['needs_information','pending','blocked'].includes(c.output?.status)),failed=calls.some(c=>c.status==='error');
+  const states={needs_information:'待补充信息',pending:'待入账',blocked:'未更新',use_other_tool:'需切换处理',applied:'已入账'};
+  const stateLabel=call=>call.status==='running'?'正在执行':call.status==='error'?'执行失败':states[call.output?.status]||'已完成';
+  const group='tools-'+calls[0].id,running=calls.some(c=>c.status==='running'),waiting=calls.some(c=>['needs_information','pending','blocked','use_other_tool'].includes(c.output?.status)),failed=calls.some(c=>c.status==='error');
   const label=running?'正在处理':failed?'部分处理未完成':waiting?'有待确认或入账的事项':`已完成 ${calls.length} 项处理`;
-  return `<details class="chat-tool-summary" data-tool-id="${esc(group)}" ${expandedToolCalls.has(group)?'open':''}><summary>${running?'<span class="thinking-spinner" aria-hidden="true"></span>':icon('check',11)}<span>${label}</span></summary><div class="chat-tool-calls" aria-label="工具调用记录">${calls.map(call=>`<details class="chat-tool-call" data-tool-id="${esc(call.id)}" ${expandedToolCalls.has(call.id)?'open':''}><summary><span>${esc(call.label||call.name)}</span><small class="tool-state ${call.status==='error'?'is-error':''}">${call.status==='running'?'正在执行':call.status==='error'?'执行失败':'已完成'}</small></summary><div class="chat-tool-body"><code>${esc(call.name)}</code><h4>调用参数</h4><pre>${json(call.args)}</pre><h4>返回数据</h4>${Object.hasOwn(call,'output')?`<pre>${json(call.output)}</pre>`:'<p>正在等待工具返回…</p>'}</div></details>`).join('')}</div></details>`;
+  return `<details class="chat-tool-summary" data-tool-id="${esc(group)}" ${expandedToolCalls.has(group)?'open':''}><summary>${running?'<span class="thinking-spinner" aria-hidden="true"></span>':icon('check',11)}<span>${label}</span></summary><div class="chat-tool-calls" aria-label="工具调用记录">${calls.map(call=>`<details class="chat-tool-call" data-tool-id="${esc(call.id)}" ${expandedToolCalls.has(call.id)?'open':''}><summary><span>${esc(call.label||call.name)}</span><small class="tool-state ${call.status==='error'?'is-error':''}">${stateLabel(call)}</small></summary><div class="chat-tool-body"><code>${esc(call.name)}</code><h4>调用参数</h4><pre>${json(call.args)}</pre><h4>返回数据</h4>${Object.hasOwn(call,'output')?`<pre>${json(call.output)}</pre>`:'<p>正在等待工具返回…</p>'}</div></details>`).join('')}</div></details>`;
 }
 function liveAnswerHTML(){
   const label=chatStage==='calculating'?'正在核算':chatStage==='answering'?'正在回答':'正在思考';
@@ -836,8 +853,13 @@ document.addEventListener('click',async event=>{
     if(action==='history-point'){selectHistoryDate(target.dataset.date);$('#price-history-chart [aria-pressed="true"]')?.focus?.();return;}
     if(action==='retry-instrument-details'){if(activePriceHistory)return loadInstrumentDetails(activePriceHistory);return;}
     if(action==='fund-reference-refresh'){if(activePriceHistory)return loadFundReference(activePriceHistory);return;}
+    if(action==='fund-reference-point'){selectReferencePoint(target.dataset.chart,Number(target.dataset.index));return;}
+    if(action==='fund-reference-step'){
+      const {points,index}=referenceChartSelection(activePriceHistory,target.dataset.chart),step=target.dataset.step;
+      if(['previous','next','latest'].includes(step))selectReferencePoint(target.dataset.chart,step==='latest'?points.length-1:index+(step==='previous'?-1:1));return;
+    }
     if(action==='fund-reference-mode'){
-      if(activePriceHistory&&['intraday','daily'].includes(target.dataset.mode)){activePriceHistory.referenceMode=target.dataset.mode;activePriceHistory.referencePoint=null;paintFundReference(activePriceHistory);}return;
+      if(activePriceHistory&&['intraday','daily'].includes(target.dataset.mode)){activePriceHistory.referenceMode=target.dataset.mode;activePriceHistory.referencePoint=null;activePriceHistory.referenceVolumePoint=null;paintFundReference(activePriceHistory);$(`[data-action="fund-reference-mode"][data-mode="${target.dataset.mode}"]`)?.focus?.({preventScroll:true});}return;
     }
     if(action==='add-debt'||action==='edit-debt')return debtDialog(target.dataset.id);
     if(action==='asset-filter'){assetFilter=target.dataset.filter;return render();}
@@ -898,10 +920,7 @@ document.addEventListener('click',async event=>{
 document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
-  if(event.target.matches('[data-fund-reference-range]')){
-    const view=activePriceHistory,points=(view?.referenceMode==='daily'?view?.referenceData?.history:view?.referenceData?.intraday)?.points||[],point=points[Number(event.target.value)];
-    if(view&&point){view.referencePoint=point.time||point.date;paintFundReference(view);$('[data-fund-reference-range]')?.focus?.();}return;
-  }
+  if(event.target.matches('[data-fund-reference-select]')){selectReferencePoint(event.target.dataset.chart,Number(event.target.value),'select');return;}
   if(event.target.matches('[data-history-date]')){selectHistoryDate(event.target.value);$('[data-history-date]')?.focus?.();return;}
   if(event.target.matches('#asset-form [name=costMode]')){const draft=readAssetDraft();draft.costEntryAmount=null;draft.costPanelOpen=true;assetDialog(draft.id,draft);}
 
@@ -918,6 +937,10 @@ document.addEventListener('change',event=>{
   }
 });
 document.addEventListener('keydown',event=>{
+  if(event.target.matches('[data-reference-chart]')&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+    event.preventDefault();const chart=event.target.dataset.referenceChart,{points,index}=referenceChartSelection(activePriceHistory,chart);
+    selectReferencePoint(chart,event.key==='Home'?0:event.key==='End'?points.length-1:Math.max(0,Math.min(points.length-1,index+(event.key==='ArrowLeft'?-1:1))));return;
+  }
   if(event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'&&event.key==='Enter'&&!event.isComposing){event.preventDefault();findStock();}
 
   if(event.target.matches('#chat-form textarea')&&event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('#chat-form').requestSubmit();}

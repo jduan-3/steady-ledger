@@ -68,9 +68,9 @@ test('first-load failures and deleted assets never create a valuation or retain 
   let release;const gate=new Promise(resolve=>{release=resolve;}),running=refreshFundReference(store,'fund',{now:new Date(now.getTime()+61000),fetchImpl:async url=>{await gate;return response(url);}});
   const state=store.state({raw:true});state.assets=[];store.save(state,state.revision);release();await assert.rejects(running,e=>e.status===404);assert.equal(store.getKV('fund_reference:'+key).quote,undefined);
 });
-test('reference UI labels relation, source dates, volume and missing data, separates NAV and supports range selection without unsafe links',()=>{
+test('reference UI labels relation, source dates, volume and missing data, separates NAV and supports chart selection without unsafe links',()=>{
   const view={reference:{...FUND_REFERENCES['005052'],verifiedAt:'2026-10-31'},quote:parseReferenceQuote(wire(),key,now),intraday:parseReferenceMinutes(minutes(),key,now),history:parseReferenceHistory(history(),key,now),errors:{quote:'保留上次数据'}};
-  const html=fundReferenceHTML(view);assert.match(html,/同指数参考 ETF/);assert.match(html,/不是该 ETF 的联接基金/);assert.match(html,/基金估值仍按正式披露净值/);assert.match(html,/2026-10-30 15:00:00/);assert.match(html,/data-fund-reference-range/);assert.match(html,/成交额/);assert.match(html,/保留上次数据/);assert.match(html,/1,000 份/);
+  const html=fundReferenceHTML(view);assert.match(html,/同指数参考 ETF/);assert.match(html,/不是该 ETF 的联接基金/);assert.match(html,/基金估值仍按正式披露净值/);assert.match(html,/2026-10-30 15:00:00/);assert.match(html,/data-fund-reference-select/);assert.match(html,/成交额/);assert.match(html,/保留上次数据/);assert.match(html,/1,000 份/);
   assert.match(fundReferenceChartHTML(view,'intraday',0),/2026-10-30 09:30/);assert.match(fundReferenceChartHTML(view,'daily'),/不复权日线/);
   const escaped=fundReferenceHTML({...view,reference:{...view.reference,name:'<img src=x onerror=alert(1)>',sources:[{title:'bad',url:'javascript:alert(1)'}]}});assert.ok(!escaped.includes('<img'));assert.ok(!escaped.includes('href="javascript:'));assert.match(escaped,/&lt;img/);
   assert.ok(!/NaN|Infinity/.test(fundReferenceChartHTML({...view,intraday:{date:'2026-10-30',points:[{time:'09:30',price:1,volume:null}]}})));
