@@ -76,6 +76,14 @@ test('连续补答日期和资金来源能承接同一笔，跨午夜不把原�
   const result=await bind('现有现金','multiple-follow-ups',{history,startedAt:current.getTime()}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:'今天买的',cashSource:'registered'});
   assert.equal(result.status,'applied');assert.equal(result.date,'2026-10-29');assert.equal(result.after.cash,9000);
 });
+test('包含买入或卖出字样的简短日期补答仍承接原指令的标的与金额',async t=>{
+  const {bind}=setup(t),original='用现有现金买入1000元科创，前几天买的';
+  const buy=await bind('今天买入的','buy-date',{history:[{role:'user',content:original},{role:'assistant',content:'具体是哪天买入的？'}]}).recordHoldingChange({query:'科创',side:'buy',amount:1000,evidence:original});
+  assert.equal(buy.status,'applied');assert.equal(buy.date,date);assert.equal(buy.after.cash,9000);
+  const current=new Date('2026-10-30T02:00:00Z'),question='昨天卖出的',saleOriginal='科创全部卖了，前几天的';
+  const sale=await bind(question,'sell-date',{startedAt:current.getTime(),history:[{role:'user',content:saleOriginal},{role:'assistant',content:'具体是哪天卖出的？'}]}).recordHoldingChange({query:'科创',side:'sell',evidence:saleOriginal});
+  assert.equal(sale.status,'applied');assert.equal(sale.date,date);assert.equal(sale.after.quantity,0);
+});
 test('日期补答只承接相邻的未完成买卖，不能借旧记录、建议或否定指令入账',async t=>{
   const {store,bind}=setup(t),before=store.state({raw:true}),original='我今天用现有现金买入1000元科创';
   const args={query:'科创',side:'buy',amount:1000,evidence:original+'。今天买的'};
@@ -173,6 +181,37 @@ test('全部变成 cash 与南方啊能连续承接未完成卖出，保留原�
   ];
   const result=await bind('南方啊','recover-full-sale',{history,startedAt:now.getTime()+86400000}).recordHoldingChange({query:'南方',side:'sell',evidence:original,quantity:100});
   assert.equal(result.status,'applied');assert.equal(result.date,date);assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);
+});
+
+test('完整卖出原话优先于模型拼接的旧证据，按昨日净值清仓并转入现金',async t=>{
+  const current=new Date('2026-10-30T02:11:37Z'),{store,bind}=setup(t,{clock:()=>current}),state=store.state();
+  state.assets[1].name='南方基金';store.save(state,state.revision);
+  const question='南方基金按照昨天的价格全部卖掉了';
+  const result=await bind(question,'fresh-sale',{startedAt:current.getTime(),history:[{role:'user',content:'我今天用现有现金买入1000元科创'},{role:'assistant',content:'这笔要更新哪项记录、具体缺少的内容是什么？'}]}).recordHoldingChange({query:'南方',side:'sell',quantity:999,price:999,evidence:'之前买入科创；然后我把南方全部卖了'});
+  assert.equal(result.status,'applied');assert.equal(result.date,date);assert.equal(result.price.basis,'unit_nav');assert.equal(result.price.price,2);assert.equal(result.quantity,100);assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);
+});
+
+test('已经发生了按照昨天收盘价承接紧邻失败卖出，不再追问标的且重放不重复入账',async t=>{
+  const current=new Date('2026-10-30T02:12:00Z'),{store,bind}=setup(t,{clock:()=>current}),state=store.state();
+  state.assets[1].name='南方基金';store.save(state,state.revision);
+  const original='南方基金 按照昨天的价格 全部卖掉了',question='已经发生了 按照 昨天的收盘价';
+  const history=[{role:'user',content:original,created_at:'2026-10-30T02:11:37Z'},{role:'assistant',content:'你要记录已经发生的买卖，还是按最新总份额校准持仓？',metadata:{toolCalls:[{name:'record_holding_change',output:{status:'needs_information'}}]}}];
+  const call=()=>bind(question,'confirmed-sale',{history,startedAt:current.getTime()}).recordHoldingChange({query:'南方',side:'sell',assetId:'star',quantity:100,price:999,date,evidence:original});
+  const result=await call();assert.equal(result.status,'applied');assert.equal(result.date,date);assert.equal(result.price.price,2);assert.equal(result.price.basis,'unit_nav');assert.equal(result.after.quantity,0);assert.equal(result.after.cash,10200);
+  const revision=store.state().revision;assert.equal((await call()).replayed,true);assert.equal(store.state().revision,revision);assert.equal(store.ledgerEntries().length,1);
+});
+
+test('已发生补答不能重开已完成或待入账记录，也不能把假设与否定变成买卖',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),question='已经发生了 按照昨天的收盘价',original='今天科创全部卖了';
+  for(const status of ['applied','pending']){
+    const history=[{role:'user',content:original},{role:'assistant',content:'你要记录已经发生的买卖，还是按最新总份额校准持仓？',metadata:{toolCalls:[{name:'record_holding_change',output:{status}}]}}];
+    await assert.rejects(bind(question,'saved-confirmation-'+status,{history}).recordHoldingChange({query:'科创',side:'sell',evidence:original}),/当前明确/);
+  }
+  for(const content of ['如果今天科创全部卖了','今天科创没有全部卖掉']){
+    const history=[{role:'user',content},{role:'assistant',content:'你要记录已经发生的买卖，还是按最新总份额校准持仓？'}];
+    await assert.rejects(bind(question,'unsafe-confirmation',{history}).recordHoldingChange({query:'科创',side:'sell',evidence:content}),/讨论或计划|被否定/);
+  }
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
 });
 
 test('卖出缺数量时补答全部即可入账，不能重复追问具体份额',async t=>{

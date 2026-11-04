@@ -1,6 +1,7 @@
 import { isoDay, marketDay } from './securities.mjs';
 import { parseTencentQuote } from './tencent.mjs';
 import { stockQuote } from './market.mjs';
+import { watchedFundAsset } from './funds.mjs';
 
 // Relations come from issuer disclosures, not fund-name similarity.
 export const FUND_REFERENCES={
@@ -64,7 +65,7 @@ export function parseReferenceHistory(input,key,now=new Date()) {
 }
 
 export function fundReference(store,assetId,now=new Date()) {
-  const asset=store.state({raw:true}).assets.find(a=>a.id===assetId);
+  const state=store.state({raw:true}),asset=state.assets.find(a=>a.id===assetId)||watchedFundAsset(state,assetId);
   if(!asset)throw Object.assign(new Error('资产不存在'),{status:404});
   if(asset.type!=='fund')return {assetId,status:'not_applicable'};
   const reference=FUND_REFERENCES[asset.fund?.code];
@@ -98,7 +99,8 @@ export function refreshFundReference(store,assetId,{fetchImpl=fetch,now=new Date
       read('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+code+',day,,,60,').then(text=>parseReferenceHistory(JSON.parse(text),key,now))
     ]);
     // A deleted/replaced fund must not receive a late response from its old request.
-    if(store.state({raw:true}).assets.find(a=>a.id===assetId)?.fund?.code!==view.fundCode)return;
+    const current=store.state({raw:true});
+    if((current.assets.find(a=>a.id===assetId)||watchedFundAsset(current,assetId))?.fund?.code!==view.fundCode)return;
     const next={...cached,attemptedAt:fetchedAt(now),errors:{}};
     for(const [i,section] of ['quote','intraday','history'].entries()){
       const result=results[i],old=cached?.[section];

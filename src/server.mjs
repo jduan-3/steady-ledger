@@ -7,7 +7,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { validateState, calculate, evaluate, demoState, parseCSV, CSV_HEADER, nowDate } from './domain.mjs';
 import { openStore } from './store.mjs';
 import { validateConfig, explain, requireAI, testConnection } from './ai.mjs';
-import { refreshFundNAV } from './funds.mjs';
+import { refreshFundNAV, watchedFundAsset } from './funds.mjs';
 import { dailyValuation } from './valuation.mjs';
 import { searchSecurities, refreshStocks, refreshFX } from './market.mjs';
 import { security } from './securities.mjs';
@@ -144,6 +144,12 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
           const photo=await readFile(avatarPath);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'private, no-cache'});return res.end(photo);
         }
         if (path === '/api/market/refresh' && req.method === 'POST') { await body(req); const result = await updateNAV({ retryFailed: true, force: true }); return json(res, { result, ...view() }); }
+        if(path==='/api/market/fund-watchlist/refresh'&&req.method==='POST'){
+          const input=await body(req),watchlist=store.state({raw:true}).fundWatchlist||[];
+          if(input.code!=null&&!watchlist.some(f=>f.code===input.code))return json(res,{error:'自选基金不存在'},404);
+          const result=await refreshFundNAV(store,{codes:input.code?[input.code]:watchlist.map(f=>f.code),retryFailed:true,force:true});
+          return json(res,{result,...view()});
+        }
         if(path==='/api/market/fund-reference'&&req.method==='GET')return json(res,fundReference(store,url.searchParams.get('id')));
         if(path==='/api/market/fund-reference/refresh'&&req.method==='POST'){const input=await body(req);return json(res,await refreshFundReference(store,input.id));}
         if(path==='/api/market/stock-data'&&req.method==='GET')return json(res,stockMarketData(store,url.searchParams.get('id')));
@@ -151,7 +157,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         if (path === '/api/market/search' && req.method === 'GET') return json(res, await searchSecurities(store, url.searchParams.get('q'), url.searchParams.get('market') || 'ALL'));
         if (path === '/api/market/quote' && req.method === 'POST') { const s=security(await body(req)); await refreshStocks(store,{keys:[s.key],force:true}); return json(res,{quote:store.getKV('stock_quote:'+s.key),attempt:store.getKV('stock_attempt:'+s.key)}); }
         if (path === '/api/market/history' && req.method === 'GET') {
-          const a=store.state().assets.find(a=>a.id===url.searchParams.get('id'));if(!a)return json(res,{error:'资产不存在'},404);
+          const state=store.state(),id=url.searchParams.get('id'),a=state.assets.find(a=>a.id===id)||watchedFundAsset(state,id);if(!a)return json(res,{error:'资产不存在'},404);
           const instrument=a.fund?.autoNav?'FUND.'+a.fund.code:a.security?.key;
           return json(res,{items:instrument?store.priceHistory(instrument):[]});
         }

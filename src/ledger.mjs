@@ -9,7 +9,7 @@ import { inferredCostBasis } from './investments.mjs';
 const round=n=>Math.round(n*100)/100;
 const normalize=s=>String(s||'').normalize('NFKC').replace(/[\s,，]/g,'').toLowerCase();
 const fingerprint=a=>JSON.stringify(a?{quantity:a.quantity,costBasis:a.costBasis??null,key:a.security?.key||a.fund?.code,currency:a.currency}:null);
-const clarificationInstruction='先按已确认的用户原话纠正参数；确实缺信息时只询问 question 中的缺项，保留同一笔记录的其他已确认信息，补答后继续。不要要求重说完整指令，也不要在没有新信息时反复调用失败工具。';
+const clarificationInstruction='先按已确认的用户原话纠正参数；确实缺信息时只询问 question 中的缺项，保留同一笔记录的其他已确认信息，补答后继续。不要要求重说完整指令，也不要在没有新信息时反复调用失败工具。此状态尚未保存待入账记录，不得承诺净值披露后会自动执行。';
 const need=(missing,extra={})=>({status:'needs_information',requiresUserInput:true,missing:[missing],question:'请补充或确认：'+missing+'。',instruction:clarificationInstruction,...extra});
 const ask=(missing,question)=>Object.assign(new Error(missing),{ledgerClarification:need(missing,{question})});
 const savedLedgerAnswer=answer=>answer?.metadata?.toolCalls?.some(call=>['record_holding_change','record_cash_flow','set_holding_balance'].includes(call.name)&&['applied','pending'].includes(call.output?.status));
@@ -66,19 +66,24 @@ function checkCurrency(text,args,kind,currency) {
   }
 }
 function evidenceFor(meta,evidence,kind,assets=[]) {
+  // A new trade instruction is authoritative even if the model quotes an older
+  // turn or concatenates its own evidence. Authorization still checks this entire turn.
+  if(kind==='holding'&&/买了|买入|加了|加仓|申购|卖了|卖出|卖掉|卖光|卖完|减了|减仓|赎回|清仓/.test(meta.question)&&assets.some(a=>['stock','fund'].includes(a.type)&&mentionsHolding(a,meta.question)))return {text:meta.question,dateText:meta.question,at:meta.startedAt||Date.now()};
   const previous=meta.history?.at(-2),answer=meta.history?.at(-1);
   const dateAnswer=/^(?:是|就|我是)?(?:今天|昨天|昨日|前天|\d{4}-\d{2}-\d{2})(?:买的|买入的|卖的|卖出的|下单的|成交的|申购的|赎回的|的)?[。！!]?$/u.test(normalize(meta.question));
   const cashAnswer=/现有现金|额外投入|账外|外部资金|用现金|余额|^现金[。！!]?$/u.test(meta.question)&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回/.test(meta.question);
   const valueAnswer=meta.question.length<=100&&numberFacts(meta.question,'holding').some(f=>['amount','quantity'].includes(f.role))&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回|如果|假设|比如|计划/.test(meta.question);
   const subjectAnswer=meta.question.length<=80&&assets.some(a=>['stock','fund','cash'].includes(a.type)&&mentionsHolding(a,meta.question))&&!/买了|买入|加仓|申购|卖了|卖出|卖掉|减仓|赎回|清仓|收到|支付|如果|假设|比如|计划/.test(meta.question);
+  const tradeAnswer=/^(?:已经|已)(?:发生|成交)(?:了)?(?:[，,。！!]|按照|按|以|$)/.test(normalize(meta.question))&&/已经发生|发生的买卖|实际成交/.test(answer?.content||'');
   const saved=savedLedgerAnswer(answer);
   if(kind==='holding'&&previous?.role==='user'&&answer?.role==='assistant'&&!saved&&/[?？]|请.{0,20}(?:确认|提供|补充)|告诉我|还是/.test(answer.content)){
     const dateQuestion=dateAnswer&&/哪天|哪一天|日期|几号|何时|什么时候|成交日|交易日/.test(answer.content);
-    if(dateQuestion||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位/.test(answer.content)||allAnswer(meta.question)&&/金额|数量|份额|股数|单位|全部|清仓|哪项记录/.test(answer.content)||subjectAnswer&&/哪项|哪一|名称|代码|标的|记录|账户/.test(answer.content)){
+    if(dateQuestion||tradeAnswer||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位/.test(answer.content)||allAnswer(meta.question)&&/金额|数量|份额|股数|单位|全部|清仓|哪项记录/.test(answer.content)||subjectAnswer&&/哪项|哪一|名称|代码|标的|记录|账户/.test(answer.content)){
       // Only adjacent answers to a clarification can extend an instruction.
       // Rebuild evidence from complete user turns, never the model's paraphrase.
       const original=evidenceFor({...meta,question:previous.content,startedAt:Date.parse(previous.created_at)||meta.startedAt,history:meta.history.slice(0,-2)},undefined,kind,assets);
-      return {text:original.text+'\n'+meta.question,dateText:dateQuestion?meta.question:original.dateText,at:dateQuestion?(meta.startedAt||Date.now()):original.at};
+      const newDate=dateQuestion||tradeAnswer&&/今天|昨天|昨日|前天|\d{4}-\d{2}-\d{2}/.test(meta.question);
+      return {text:original.text+'\n'+meta.question,dateText:newDate?meta.question:original.dateText,at:newDate?(meta.startedAt||Date.now()):original.at};
     }
   }
   if(!evidence)return {text:meta.question,dateText:meta.question,at:meta.startedAt||Date.now()};
@@ -244,6 +249,9 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         // “全部卖了” authorizes the saved quantity, not a model-supplied number
         // copied from the snapshot. Price and fee still require user evidence.
         if(fullSale)args={...args,amount:undefined,quantity:undefined};
+        // A named NAV/closing-price basis is resolved from the source cache, not
+        // converted into a user-supplied execution price by the model.
+        if(args.price!=null&&/(?:按|按照|以)[^，,。；;！？!?\n]{0,20}(?:收盘价|净值|(?:今天|昨天|昨日|前天)的价格)/.test(source.text)&&!numberFacts(source.text,'holding').some(f=>f.role==='price'))args={...args,price:undefined};
         const evidence=authorize(meta,args,'holding',source);
         const query=args.query&&normalize(evidence.text).includes(normalize(args.query))?args.query:null;
         let matches=query?state.assets.filter(a=>['stock','fund'].includes(a.type)&&[a.name,a.security?.key,a.fund?.code].some(s=>normalize(s).includes(normalize(query)))):[];

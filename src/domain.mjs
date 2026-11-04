@@ -11,7 +11,7 @@ export function initialState() {
     profile: { income: null, expenses: null, incomeStability: 'unknown', payday: 10, emergencyMonths: 6, note: '', autoIncome:{enabled:false,cashAssetId:'',startsOn:'',lastPeriod:''}, background: { displayName: DEFAULT_DISPLAY_NAME } },
     policy: { stockCaution: 50, stockLimit: null, debtRatioLimit: null, issuerLimit: null, buyTranchePercent: null, staleDays: 7, grid: {...DEFAULT_GRID} },
     preferences: { timeZone: 'Asia/Shanghai', reportTime: '20:00', rates: { CNY: 1 }, autoFx: true },
-    assets: [], debts: [], upcoming: [], decisions: []
+    assets: [], debts: [], upcoming: [], decisions: [], fundWatchlist: []
   };
 }
 
@@ -77,6 +77,15 @@ export function validateState(input) {
     clean.preferences.rates[currency] = number(rate, '人民币汇率', { min: 0.000001, max: 1e6 });
   }
   clean.preferences.rates.CNY = 1;
+  const watchlist=input.fundWatchlist??[],watchedCodes=new Set();
+  if(!Array.isArray(watchlist)||watchlist.length>5000)throw new Error('自选基金格式错误或记录过多');
+  clean.fundWatchlist=watchlist.map(f=>{
+    if(!f||typeof f.code!=='string'||!/^\d{6}$/.test(f.code))throw new Error('自选基金代码需要为六位数字');
+    if(watchedCodes.has(f.code))throw new Error('自选基金代码重复');
+    watchedCodes.add(f.code);
+    const name=text(f.name??'基金 '+f.code,'自选基金名称');if(!name)throw new Error('自选基金名称不能为空');
+    return {code:f.code,name};
+  });
   for (const key of ['assets', 'debts', 'upcoming', 'decisions']) if (!Array.isArray(input[key]) || input[key].length > 5000) throw new Error(`${key}数据格式错误或记录过多`);
   const usedIds = new Set();
   const id = (v) => { const out = text(v || randomUUID(), '记录编号', 100); if (usedIds.has(out)) throw new Error('存在重复的记录编号'); usedIds.add(out); return out; };

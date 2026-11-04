@@ -54,3 +54,16 @@ test('fund units and unknown insurance premium frequency survive validation with
   const m=calculate(validateState(s));assert.equal(m.totalAssets,1000);assert.equal(m.insuranceExpenseComplete,false);assert.equal(m.surplus,null);
   s.assets=[{id:'f',type:'fund',name:'Synthetic fund',currency:'CNY',value:100,quantity:10,unit:'股',asOf:'2026-10-23',fund:{code:'123456',autoNav:true}}];assert.throws(()=>validateState(s),/以份为单位/);
 });
+
+test('自选基金兼容旧账本、按代码去重校验，刷新净值不改变持仓或资产合计',async t=>{
+  const legacy=initialState();delete legacy.fundWatchlist;assert.deepEqual(validateState(legacy).fundWatchlist,[]);
+  assert.throws(()=>validateState({...legacy,fundWatchlist:[{code:'123',name:'无效'}]}),/六位数字/);
+  assert.throws(()=>validateState({...legacy,fundWatchlist:[{code:'006789',name:'一'},{code:'006789',name:'二'}]}),/重复/);
+  const store=setup(t),state=store.state();state.fundWatchlist=[{code:'123456',name:'已持有的基金'},{code:'006789',name:'仅关注的基金'}];store.save(state,state.revision);
+  const before=store.state({raw:true}),calls=[];
+  await refreshFundNAV(store,{now:new Date('2026-10-24T08:00:00Z'),fetchImpl:async url=>{calls.push(url.searchParams.get('fundCode'));return reply();}});
+  assert.deepEqual(calls.sort(),['006789','123456']);assert.deepEqual(store.state({raw:true}),before);
+  const projected=store.state();assert.equal(projected.assets.length,1);assert.equal(projected.fundWatchlist[1].valuation.price,2.6);assert.equal(projected.fundWatchlist[1].movement.amount,null);
+  assert.deepEqual(calculate(projected),calculate({...projected,fundWatchlist:[]}));
+  assert.deepEqual(validateState(JSON.parse(JSON.stringify(projected))).fundWatchlist,before.fundWatchlist);
+});

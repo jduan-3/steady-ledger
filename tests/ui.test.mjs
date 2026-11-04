@@ -10,7 +10,7 @@ import { readEventStream } from '../public/sse.js';
 import { marketPageHTML,marketBriefsHTML } from '../public/markets.js';
 import { monthlyPageHTML } from '../public/monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from '../public/watchboard.js';
-import { fundReferenceHTML } from '../public/fund-reference.js';
+import { fundReferenceHTML, updateReferenceChartCursor } from '../public/fund-reference.js';
 import { stockMarketHTML } from '../public/stock-market.js';
 
 // Pure rendering/event tests over local source; no browser or running page access.
@@ -18,7 +18,7 @@ function componentHarness(fetch) {
   const nodes=new Map(),listeners={};
   const node=()=>({innerHTML:'',textContent:'',classList:{add(){},remove(){}},addEventListener(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});
   class Form {constructor(id,fields){this.actualId=id;this.id={name:'id'};this.fields=fields;} getAttribute(){return this.actualId;} querySelectorAll(){return [];} }
-  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,stockMarketHTML,setTimeout:()=>0,clearTimeout(){}});
+  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,updateReferenceChartCursor,stockMarketHTML,setTimeout:()=>0,clearTimeout(){}});
   vm.runInContext(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/\nstart\(\);\s*$/,''),context);
   const state=validateState(initialState());
   context.fixture={state,metrics:calculate(state),rules:evaluate(state),history:[],reports:[],messages:[],audit:[],config:{baseUrl:'',model:'',consent:false}};
@@ -370,6 +370,24 @@ test('行情未同步但仍有已登记估值时标注暂按已有估值，紧�
  assert.match(h.run('assetsPage()'),/部分行情待更新，暂按已有估值/);assert.match(h.run('assetTable(data.state.assets,true)'),/占股票组合 100\.00%/);
 });
 
+test('基金自选支持添加、搜索、去重和移除，清仓基金可关注且不改动资产',async()=>{
+ let writes=0;
+ const h=componentHarness(async(url,options)=>{
+   assert.equal(url,'/api/state');writes++;
+   const payload=JSON.parse(options.body),state=validateState(payload.state);state.revision=payload.revision+1;
+   const projected={...state,fundWatchlist:state.fundWatchlist.map(f=>({...f,valuation:{price:1.2345,date:'2026-11-03',status:'nav'},movement:{percent:2}}))};
+   return Response.json({...h.context.fixture,state:projected,metrics:calculate(state)});
+ });
+ h.context.fixture.state=validateState({...h.context.fixture.state,assets:[{id:'south',type:'fund',name:'南方基金',currency:'CNY',quantity:0,unit:'份',value:0,asOf:'2026-11-03',fund:{code:'008164',autoNav:true}}]});
+ const before=h.run('JSON.stringify(data.state.assets)'),click=dataset=>h.listeners.click({target:{closest:()=>({dataset})}});
+ await click({action:'fund-view',view:'watchlist'});assert.match(h.run('fundsPage()'),/还没有自选基金/);
+ const submit=()=>h.listeners.submit({target:new h.Form('fund-watch-form',[['code','008164'],['name','']]),preventDefault(){}});
+ await submit();assert.equal(writes,1);assert.equal(h.run('data.state.fundWatchlist[0].name'),'南方基金');assert.equal(h.run('JSON.stringify(data.state.assets)'),before);
+ let html=h.run('fundsPage()');assert.match(html,/自选基金/);assert.match(html,/1\.2345/);assert.match(html,/watch-fund-008164/);assert.doesNotMatch(html,/占基金组合|浮动盈亏/);
+ h.run("fundQuery='008164'");assert.equal(h.run('filteredFundWatchlist().length'),1);h.run("fundQuery='missing'");assert.match(h.run('fundsPage()'),/没有匹配的基金/);
+ h.run("fundQuery=''");await submit();assert.equal(writes,1);
+ await click({action:'remove-fund-watch',code:'008164'});assert.equal(writes,2);assert.equal(h.run('data.state.fundWatchlist.length'),0);assert.equal(h.run('JSON.stringify(data.state.assets)'),before);
+});
 test('基金组合占比按全部基金当前估值计算，币种统一，筛选不改变分母，默认按占比降序',()=>{
  const h=componentHarness();h.run(`data.state.preferences.rates={CNY:1,USD:7};data.state.assets=[
   {id:'small',name:'美元基金',type:'fund',currency:'USD',value:100,inPool:false,costBasis:{amount:99999}},
@@ -409,37 +427,73 @@ test('历史图表处理空、单点与平价，不画虚构走势，不产生 N
    if(rows.length===1){assert.match(html,/只有 1 条/);assert.match(html,/<g class="trend-line"><\/g>/);}
  }
 });
-test('行情价格与成交量独立点选、前后切换和回到最新，不改变已保存的历史日期',async()=>{
+test('股票价格与成交量同步点选、切换和回到最新，不改变已保存的历史日期',async()=>{
  const h=componentHarness();
  h.context.marketFixture={instrument:{key:'US.SAMPLE',market:'US',currency:'USD',name:'示例股票'},quote:{date:'2026-11-02',previous:{price:100}},intraday:{date:'2026-11-02',points:[{time:'09:30',price:100,volume:10},{time:'09:31',price:102,volume:30},{time:'09:35',price:101,volume:null}]},history:{points:[{date:'2026-10-30',price:99,volume:100},{date:'2026-11-02',price:101,volume:120}]}};
  h.run("activePriceHistory={asset:{type:'stock'},selectedDate:'2026-10-30',referenceMode:'intraday',referenceData:marketFixture,referencePoint:null,referenceVolumePoint:null};$('#dialog').open=true;paintFundReference(activePriceHistory);");
  const click=dataset=>h.listeners.click({target:{closest:()=>({dataset})}});
  await click({action:'fund-reference-point',chart:'price',index:'0'});
- assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
- await click({action:'fund-reference-step',chart:'volume',step:'previous'});
- assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:30');
+ await click({action:'fund-reference-step',chart:'volume',step:'next'});
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:31');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
  let html=h.nodes.get('#fund-reference-view').innerHTML,price=html.split('data-reference-panel="price"')[1].split('</section>')[0],volume=html.split('data-reference-panel="volume"')[1].split('</section>')[0];
- assert.match(price,/100\.000/);assert.match(price,/2026-11-02 09:30/);assert.match(volume,/30 股/);assert.match(volume,/2026-11-02 09:31/);assert.ok(!html.includes('data-fund-reference-range'));
+ assert.match(price,/102\.000/);assert.match(price,/2026-11-02 09:31/);assert.match(volume,/30 股/);assert.match(volume,/2026-11-02 09:31/);assert.doesNotMatch(html,/data-fund-reference-select/);
  await click({action:'fund-reference-step',chart:'price',step:'latest'});
- assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
- h.listeners.change({target:{matches:selector=>selector==='[data-fund-reference-select]',dataset:{chart:'volume'},value:'2'}});
- assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);assert.match(h.nodes.get('#fund-reference-view').innerHTML,/该时点成交量缺失/);
+ assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);assert.match(h.nodes.get('#fund-reference-view').innerHTML,/该时点成交量缺失/);
+ await click({action:'fund-reference-mode',mode:'daily'});
+ h.listeners.keydown({key:'Home',preventDefault(){},target:{matches:selector=>selector==='[data-reference-chart]',dataset:{referenceChart:'volume'}}});
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-10-30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-10-30');
+ await click({action:'fund-reference-step',chart:'volume',step:'latest'});
+ assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
  assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-30');
 });
-test('行情独立键盘选点支持边界和最新跟随，跨交易日或切换周期不会沿用旧时点',async()=>{
+test('任一股票图悬停同步更新价格与成交量，缺失成交量不补零，且不重建图表',()=>{
+ const h=componentHarness();
+ h.run("activePriceHistory={asset:{type:'stock'},selectedDate:'2026-10-30',referenceMode:'intraday',referenceData:{instrument:{market:'US',currency:'USD'},intraday:{date:'2026-11-02',points:[{time:'09:30',price:100,volume:10},{time:'09:31',price:102,volume:30},{time:'09:35',price:101,volume:null}]},quote:{date:'2026-11-02',previous:{price:100}}},referencePoint:null,referenceVolumePoint:null};$('#dialog').open=true;paintFundReference(activePriceHistory);");
+ const root=h.nodes.get('#fund-reference-view'),original=root.innerHTML;
+ const element=()=>({attributes:{},setAttribute(name,value){this.attributes[name]=String(value);}});
+ const readings={price:{},volume:{}},cursors={price:{style:{},hidden:true},volume:{style:{},hidden:true}},latest=[{disabled:true},{disabled:true}],bars=[element(),element()];
+ const charts=['price','volume'].map(kind=>{
+   const guide=element(),horizontal=element(),marker=kind==='price'?element():null;
+   const targets=[4,500,996].map((x,i)=>({dataset:{referenceX:String(x),...(kind==='price'||i<2?{referenceY:String(kind==='price'?100-i*20:70-i*30)}:{})}}));
+   return {...element(),dataset:{currency:'USD',volumeUnit:'股',referenceChart:kind},guide,horizontal,marker,querySelector(selector){
+     if(selector==='.fund-reference-guide')return guide;if(selector==='.fund-reference-horizontal')return horizontal;if(selector==='.fund-reference-selected')return marker;
+     if(selector==='[data-selected="true"]')return bars.find(bar=>bar.attributes['data-selected']==='true');
+     const hit=selector.match(/^\[data-index="(\d+)"\]$/);if(hit)return targets[Number(hit[1])];
+     const bar=selector.match(/^\[data-reference-volume-index="(\d+)"\]$/);return bar?bars[Number(bar[1])]:null;
+   }};
+ });
+ root.querySelectorAll=selector=>selector==='[data-reference-hover]'?charts:selector==='[data-reference-latest]'?latest:[];
+ root.querySelector=selector=>({'[data-reference-price-reading]':readings.price,'[data-reference-volume-reading]':readings.volume,'[data-reference-cursor-time="price"]':cursors.price,'[data-reference-cursor-time="volume"]':cursors.volume})[selector];
+ const hover=(chart,index)=>h.listeners.pointermove({target:{closest:()=>({dataset:{chart,index:String(index)}})}});
+ hover('price',0);
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:30');
+ for(const cursor of Object.values(cursors)){assert.equal(cursor.textContent,'09:30');assert.equal(cursor.hidden,false);assert.equal(cursor.style.left,'0.4%');}
+ for(const chart of charts){assert.equal(chart.guide.attributes.x1,'4');assert.equal(chart.attributes['aria-valuenow'],'0');}
+ assert.match(readings.price.innerHTML,/100\.000/);assert.match(readings.volume.innerHTML,/10 股/);assert.equal(bars[0].attributes['data-selected'],'true');
+ hover('volume',1);
+ assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:31');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
+ assert.match(readings.price.innerHTML,/102\.000/);assert.match(readings.volume.innerHTML,/30 股/);assert.equal(bars[0].attributes['data-selected'],'false');assert.equal(bars[1].attributes['data-selected'],'true');
+ hover('volume',2);
+ assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);assert.equal(charts[1].horizontal.attributes.visibility,'hidden');
+ assert.match(readings.volume.innerHTML,/该时点成交量缺失/);assert.doesNotMatch(readings.volume.innerHTML,/<strong>0 股/);assert.equal(bars[1].attributes['data-selected'],'false');
+ assert.ok(latest.every(button=>button.disabled));assert.equal(root.innerHTML,original);assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-30');
+});
+test('基金两图同步选点、边界和最新跟随，跨交易日或切换周期不会沿用旧时点',async()=>{
  const h=componentHarness();
  h.run("activePriceHistory={asset:{type:'fund'},referenceMode:'intraday',referenceData:{reference:{name:'示例 ETF'},intraday:{date:'2026-11-02',points:[{time:'09:30',price:1,volume:0},{time:'09:31',price:1,volume:20}]},history:{points:[{date:'2026-10-30',price:1,volume:10},{date:'2026-11-02',price:1.1,volume:30}]}},referencePoint:null,referenceVolumePoint:null};$('#dialog').open=true;");
  const key=(chart,key)=>h.listeners.keydown({key,preventDefault(){},target:{matches:selector=>selector==='[data-reference-chart]',dataset:{referenceChart:chart}}});
- key('price','Home');key('price','ArrowLeft');assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ key('price','Home');key('price','ArrowLeft');assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:30');
  h.run("activePriceHistory.referenceData.intraday.points.push({time:'09:32',price:1.2,volume:30});paintFundReference(activePriceHistory);");
- assert.equal(h.run("referenceChartSelection(activePriceHistory,'price').index"),0);assert.equal(h.run("referenceChartSelection(activePriceHistory,'volume').index"),2);
- key('volume','Home');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');
- key('volume','End');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
+ assert.equal(h.run("referenceChartSelection(activePriceHistory,'price').index"),0);assert.equal(h.run("referenceChartSelection(activePriceHistory,'volume').index"),0);
+ key('volume','Home');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:31');assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:31');
+ key('volume','End');key('volume','ArrowRight');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);assert.equal(h.run('activePriceHistory.referencePoint'),null);
+ key('price','Home');
  h.run("activePriceHistory.referenceData.intraday.date='2026-11-03';paintFundReference(activePriceHistory);");
  assert.equal(h.run("referenceChartSelection(activePriceHistory,'price').index"),2);
  await h.listeners.click({target:{closest:()=>({dataset:{action:'fund-reference-mode',mode:'daily'}})}});
  assert.equal(h.run('activePriceHistory.referencePoint'),null);assert.equal(h.run('activePriceHistory.referenceVolumePoint'),null);
- key('volume','Home');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-10-30');assert.equal(h.run('activePriceHistory.referencePoint'),null);
+ key('volume','Home');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-10-30');assert.equal(h.run('activePriceHistory.referencePoint'),'2026-10-30');
  const html=h.nodes.get('#fund-reference-view').innerHTML;assert.match(html,/各交易日的收盘价/);assert.match(html,/一个交易日的成交数量/);
  h.run("activePriceHistory.referenceData.history.points=[{date:'2026-11-02',price:1,volume:0}];paintFundReference(activePriceHistory);");
  assert.ok(!/NaN|Infinity/.test(h.nodes.get('#fund-reference-view').innerHTML));key('price','ArrowRight');assert.equal(h.run('activePriceHistory.referencePoint'),null);

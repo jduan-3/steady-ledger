@@ -9,6 +9,7 @@ The interface is Chinese-first and works on desktop and mobile. Each installatio
 - Track assets, debts, cost basis, portfolio allocation, and unrealized gains or losses.
 - Plan income, expenses, insurance premiums, and cash reserves, with optional monthly salary entries.
 - View fund NAVs and mainland Chinese, Hong Kong, and US stock quotes, intraday charts, daily history, and volume.
+- Keep a fund watchlist with published NAVs and reference charts, including funds you no longer hold.
 - Follow US and Hong Kong market dashboards, macro indicators, and daily summaries.
 - Chat with a configurable AI provider using Pi Durable, with optional access to saved page data and local bookkeeping tools.
 - Import CSV files, export financial records, and restore earlier ledger versions.

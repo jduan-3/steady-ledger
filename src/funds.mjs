@@ -5,6 +5,10 @@ const day = value => {
 
 export function applyFundNAV(input, getKV) {
   const state = structuredClone(input);
+  state.fundWatchlist=(state.fundWatchlist||[]).map(f=>{
+    const q=getKV('fund_nav:'+f.code),attempt=getKV('fund_attempt:'+f.code);
+    return {...f,valuation:q?{...q,status:attempt?.error?'pending':'nav',message:attempt?.error||''}:{status:'pending',message:attempt?.error||'等待基金单位净值'},movement:priceMovement(q)};
+  });
   for (const asset of state.assets) {
     if (!asset.fund?.autoNav) continue;
     const q = getKV('fund_nav:' + asset.fund.code), attempt = getKV('fund_attempt:' + asset.fund.code);
@@ -27,7 +31,8 @@ export function applyFundNAV(input, getKV) {
 }
 
 export async function refreshFundNAV(store, { now = new Date(), fetchImpl = fetch, retryFailed = false, force = false, codes:requestedCodes } = {}) {
-  const codes = [...new Set(requestedCodes||store.state({ raw: true }).assets.filter(a => a.fund?.autoNav).map(a => a.fund.code))];
+  const state=store.state({raw:true});
+  const codes = [...new Set(requestedCodes||[...state.assets.filter(a => a.fund?.autoNav).map(a => a.fund.code),...(state.fundWatchlist||[]).map(f=>f.code)])];
   let updated = 0; const errors = [];
   for (const code of codes.slice(0, 100)) {
     const previous = store.getKV('fund_nav:' + code), attempt = store.getKV('fund_attempt:' + code);
@@ -52,5 +57,9 @@ export async function refreshFundNAV(store, { now = new Date(), fetchImpl = fetc
     }
   }
   return { updated, errors };
+}
+export function watchedFundAsset(state,id) {
+  const f=(state.fundWatchlist||[]).find(f=>'watch-fund-'+f.code===id);
+  return f?{id,name:f.name,type:'fund',currency:'CNY',fund:{code:f.code,autoNav:true},watchOnly:true}:null;
 }
 import { priceMovement } from './valuation.mjs';

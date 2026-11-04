@@ -25,6 +25,13 @@ test('issuer-verified references distinguish target ETFs from a same-index peer 
   const state=store.state({raw:true});state.assets[0].fund.code='000001';store.save(state,state.revision);
   assert.equal(fundReference(store,'fund').status,'unmapped');assert.equal(fundReference(store,'cash').status,'not_applicable');assert.throws(()=>fundReference(store,'missing'),e=>e.status===404);
 });
+test('未持仓的自选基金可查看参考行情，移除后旧入口失效，不生成持仓',async t=>{
+  const store=setup(t),state=store.state({raw:true});state.assets=[];state.fundWatchlist=[{code:'011609',name:'自选科创基金'}];store.save(state,state.revision);
+  const before=store.state({raw:true}),view=await refreshFundReference(store,'watch-fund-011609',{now,fetchImpl:response});
+  assert.equal(view.reference.key,key);assert.ok(view.intraday.points.length);assert.deepEqual(store.state({raw:true}),before);assert.equal(store.state().assets.length,0);
+  const removed=store.state({raw:true});removed.fundWatchlist=[];store.save(removed,removed.revision);
+  assert.throws(()=>fundReference(store,'watch-fund-011609'),e=>e.status===404);
+});
 test('A-share ETF snapshots convert lots to units and amount to CNY, preserve missing values and reject other markets or identities',()=>{
   const q=parseReferenceQuote(wire(),key,now);assert.equal(q.volume,1000);assert.equal(q.amount,1200);assert.equal(q.open,1.15);assert.equal(q.turnover,0);assert.ok(Math.abs(q.percent-9.090909)<1e-5);
   const missing=parseReferenceQuote(wire({5:'',6:'',35:'',37:'',38:''}),key,now);assert.equal(missing.volume,null);assert.equal(missing.amount,null);assert.equal(missing.open,null);assert.equal(missing.turnover,null);
@@ -68,9 +75,26 @@ test('first-load failures and deleted assets never create a valuation or retain 
   let release;const gate=new Promise(resolve=>{release=resolve;}),running=refreshFundReference(store,'fund',{now:new Date(now.getTime()+61000),fetchImpl:async url=>{await gate;return response(url);}});
   const state=store.state({raw:true});state.assets=[];store.save(state,state.revision);release();await assert.rejects(running,e=>e.status===404);assert.equal(store.getKV('fund_reference:'+key).quote,undefined);
 });
+test('fund charts share the reference ETF lunch-folded axis and selected time',()=>{
+  const points=[];
+  for(let minute=570;minute<=900;minute++){
+    if(minute>690&&minute<780)continue;
+    points.push({time:String(Math.floor(minute/60)).padStart(2,'0')+':'+String(minute%60).padStart(2,'0'),price:1+points.length/10000,volume:100});
+  }
+  for(const code of ['008164','021634']){
+    const html=fundReferenceHTML({reference:FUND_REFERENCES[code],intraday:{date:'2026-11-03',points}},{selectedIndex:120,volumeSelectedIndex:0});
+    const price=html.split('data-reference-panel="price"')[1].split('</section>')[0],volume=html.split('data-reference-panel="volume"')[1].split('</section>')[0];
+    const priceXs=[...price.matchAll(/data-reference-x="([^"]+)"/g)].map(match=>Number(match[1]));
+    assert.equal(priceXs[120],priceXs[121]);
+    assert.deepEqual([...volume.matchAll(/data-reference-x="([^"]+)"/g)].map(match=>Number(match[1])),priceXs);
+    assert.equal((price.match(/class="fund-reference-price" d="([^"]+)"/)[1].match(/M/g)||[]).length,1);
+    for(const panel of [price,volume]){assert.match(panel,/11:30 \/ 13:00/);assert.match(panel,/2026-11-03 11:30/);assert.match(panel,/data-reference-hover/);}
+    assert.match(volume,/data-selected="true" data-reference-volume-index="120"/);assert.doesNotMatch(html,/data-fund-reference-select/);
+  }
+});
 test('reference UI labels relation, source dates, volume and missing data, separates NAV and supports chart selection without unsafe links',()=>{
   const view={reference:{...FUND_REFERENCES['005052'],verifiedAt:'2026-10-31'},quote:parseReferenceQuote(wire(),key,now),intraday:parseReferenceMinutes(minutes(),key,now),history:parseReferenceHistory(history(),key,now),errors:{quote:'保留上次数据'}};
-  const html=fundReferenceHTML(view);assert.match(html,/同指数参考 ETF/);assert.match(html,/不是该 ETF 的联接基金/);assert.match(html,/基金估值仍按正式披露净值/);assert.match(html,/2026-10-30 15:00:00/);assert.match(html,/data-fund-reference-select/);assert.match(html,/成交额/);assert.match(html,/保留上次数据/);assert.match(html,/1,000 份/);
+  const html=fundReferenceHTML(view);assert.match(html,/同指数参考 ETF/);assert.match(html,/不是该 ETF 的联接基金/);assert.match(html,/基金估值仍按正式披露净值/);assert.match(html,/2026-10-30 15:00:00/);assert.doesNotMatch(html,/data-fund-reference-select/);assert.equal((html.match(/data-reference-hover/g)||[]).length,2);assert.match(html,/成交额/);assert.match(html,/保留上次数据/);assert.match(html,/1,000 份/);
   assert.match(fundReferenceChartHTML(view,'intraday',0),/2026-10-30 09:30/);assert.match(fundReferenceChartHTML(view,'daily'),/不复权日线/);
   const escaped=fundReferenceHTML({...view,reference:{...view.reference,name:'<img src=x onerror=alert(1)>',sources:[{title:'bad',url:'javascript:alert(1)'}]}});assert.ok(!escaped.includes('<img'));assert.ok(!escaped.includes('href="javascript:'));assert.match(escaped,/&lt;img/);
   assert.ok(!/NaN|Infinity/.test(fundReferenceChartHTML({...view,intraday:{date:'2026-10-30',points:[{time:'09:30',price:1,volume:null}]}})));

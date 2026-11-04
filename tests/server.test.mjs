@@ -16,6 +16,35 @@ async function setup(t,options={}) {
   return {app,request,base,dir};
 }
 
+test('基金自选持久保存、独立刷新与历史详情沿用登录保护，不创建持仓',async t=>{
+  const {request,app}=await setup(t);
+  assert.equal((await request('/market/fund-watchlist/refresh','POST',{})).status,401);
+  assert.equal((await request('/market/history?id=watch-fund-008164')).status,401);
+  await request('/auth/setup','POST',{password:'watch-test-password'});
+  let view=(await request('/bootstrap')).body;view.state.fundWatchlist=[{code:'008164',name:'Synthetic watch fund'}];
+  view=(await request('/state','PUT',{state:view.state,revision:view.state.revision})).body;
+  const nativeFetch=globalThis.fetch;let calls=0;
+  t.mock.method(globalThis,'fetch',async(input,options)=>{
+    const url=new URL(input);
+    if(url.hostname==='api.fund.eastmoney.com'){
+      calls++;assert.equal(url.searchParams.get('fundCode'),'008164');
+      return Response.json({ErrCode:0,Data:{LSJZList:[{FSRQ:'2026-10-23',DWJZ:'1.2'},{FSRQ:'2026-10-22',DWJZ:'1.1'}]}});
+    }
+    return nativeFetch(input,options);
+  });
+  const refreshed=await request('/market/fund-watchlist/refresh','POST',{code:'008164'});assert.equal(refreshed.status,200);view=refreshed.body;
+  assert.equal(calls,1);assert.equal(view.state.fundWatchlist[0].valuation.price,1.2);assert.equal(view.state.assets.length,0);assert.equal(view.metrics.totalAssets,0);
+  assert.equal((await request('/market/history?id=watch-fund-008164')).body.items[0].price,1.2);
+  assert.equal((await request('/market/fund-reference?id=watch-fund-008164')).body.reference.key,'SH.515450');
+  view.state.profile.note='Another saved setting';view=(await request('/state','PUT',{state:view.state,revision:view.state.revision})).body;
+  assert.deepEqual(app.store.state({raw:true}).fundWatchlist,[{code:'008164',name:'Synthetic watch fund'}]);
+  assert.equal((await request('/export')).body.state.fundWatchlist[0].code,'008164');
+  view.state.fundWatchlist=[];await request('/state','PUT',{state:view.state,revision:view.state.revision});
+  assert.equal((await request('/market/history?id=watch-fund-008164')).status,404);
+  assert.equal((await request('/market/fund-reference?id=watch-fund-008164')).status,404);
+  assert.equal((await request('/market/fund-watchlist/refresh','POST',{code:'008164'})).status,404);
+  assert.equal((await request('/market/fund-watchlist/refresh','POST',{})).status,200);assert.equal(calls,1);
+});
 test('清空接口原子取消旧待入账；价格披露后不能重新写入空档案',async t=>{
   const {request,app}=await setup(t,{disableAuth:true}),store=app.store;
   const now=new Date('2026-10-29T10:00:00Z'),date='2026-10-29';

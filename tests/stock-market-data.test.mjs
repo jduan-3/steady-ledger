@@ -113,3 +113,28 @@ test('fund and stock volume colors track price direction, never volume growth or
   const css=readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');assert.match(css,/\.volume-up\{fill:#c24b50/);assert.match(css,/\.volume-down\{fill:#4a7fb8/);assert.match(css,/\.volume-flat\{fill:#9ca6af/);
   assert.match(fundReferenceChartHTML({...view,intraday:{...view.intraday,volumeDecreases:1}}),/对应时点的量或额留空/);
 });
+
+test('stock charts share the lunch-folded axis and hover controls while keeping real price gaps',()=>{
+  const points=[];
+  for(let minute=570;minute<=900;minute++){
+    if(minute>690&&minute<780)continue;
+    points.push({time:String(Math.floor(minute/60)).padStart(2,'0')+':'+String(minute%60).padStart(2,'0'),price:100+points.length/100,volume:10});
+  }
+  const view={instrument:{market:'SH',key:'SH.601318',currency:'CNY',name:'Synthetic'},intraday:{date:'2026-11-02',points}};
+  const html=stockMarketHTML(view),price=html.split('data-reference-panel="price"')[1].split('</section>')[0];
+  const path=price.match(/class="fund-reference-price" d="([^"]+)"/)[1];
+  assert.equal((path.match(/M/g)||[]).length,1);
+  const xs=[...price.matchAll(/data-reference-x="([^"]+)"/g)].map(match=>Number(match[1]));
+  assert.equal(xs[120],xs[121]);assert.ok(xs[122]>xs[121]);
+  for(const time of ['09:30','10:30','11:30 / 13:00','14:00','15:00'])assert.ok(price.includes(time));
+  assert.match(price,/data-reference-hover/);assert.match(price,/data-reference-cursor-time/);assert.doesNotMatch(price,/data-fund-reference-select|data-step="previous"/);
+  assert.doesNotMatch(html,/data-fund-reference-select/);assert.equal((html.match(/data-reference-hover/g)||[]).length,2);
+  const volume=html.split('data-reference-panel="volume"')[1].split('</section>')[0];
+  assert.deepEqual([...volume.matchAll(/data-reference-x="([^"]+)"/g)].map(match=>Number(match[1])),xs);
+  const selected=stockMarketHTML(view,{selectedIndex:120,volumeSelectedIndex:0}).split('data-reference-panel="volume"')[1].split('</section>')[0];
+  assert.match(selected,/2026-11-02 11:30/);assert.match(selected,/data-selected="true" data-reference-volume-index="120"/);
+  const missing=stockMarketHTML({...view,intraday:{...view.intraday,points:points.filter(point=>point.time<'10:00'||point.time>'10:10')}});
+  assert.equal((missing.match(/class="fund-reference-price" d="([^"]+)"/)[1].match(/M/g)||[]).length,2);
+  const single=stockMarketHTML({...view,intraday:{date:'2026-11-02',points:[points[0]]}});
+  assert.doesNotMatch(single,/NaN|Infinity/);
+});

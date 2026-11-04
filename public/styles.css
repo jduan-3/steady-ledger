@@ -408,7 +408,7 @@ th{background:#fafbf8;color:var(--muted);font-size:11px}
   .sidebar{height:calc(67px + env(safe-area-inset-bottom));padding:5px 7px calc(5px + env(safe-area-inset-bottom))}
   .sidebar .nav{overflow:visible;justify-content:space-between;gap:3px}
   .sidebar .nav a{flex:1;min-width:0;padding:6px 1px;font-size:9px}
-  .sidebar .nav a[data-route=us-market],.sidebar .nav a[data-route=hk-market],.sidebar .nav a[data-route=reports],.sidebar .nav a[data-route=settings]{display:none}
+  .sidebar .nav a[data-route=funds],.sidebar .nav a[data-route=us-market],.sidebar .nav a[data-route=hk-market],.sidebar .nav a[data-route=reports],.sidebar .nav a[data-route=settings]{display:none}
   .mobile-nav-more{display:flex;flex:1;min-width:0;flex-direction:column;align-items:center;gap:5px;padding:6px 1px;font-size:9px;color:#67766b;border-radius:6px;font-weight:500}
   .mobile-nav-more svg{width:19px;height:19px}
   .mobile-nav-more.active{color:var(--accent);background:var(--accent-soft);font-weight:600}
@@ -1107,3 +1107,15 @@ button.monthly-cell:hover{filter:brightness(.97);box-shadow:0 0 0 2px #37352f22}
 .fund-reference-steps button:not(:disabled):hover{background:#edf3ee;border-color:#b6c9bc}
 .fund-reference-volume{fill:#9ca6af;opacity:.85}.fund-reference .volume-up{fill:#c24b50;background:#c24b50}.fund-reference .volume-down{fill:#4a7fb8;background:#4a7fb8}.fund-reference .volume-flat{fill:#9ca6af;background:#9ca6af}.fund-reference-volume-legend{display:flex;gap:8px 14px;flex-wrap:wrap;margin:12px 0 8px;color:#7f9085;font-size:10px;line-height:1.6}.fund-reference-volume-legend span{display:inline-flex;align-items:center;gap:5px}.fund-reference-volume-legend i{display:inline-block;width:7px;height:7px;border-radius:1px;flex:none}
 @media(max-width:720px){.fund-reference-panel{padding:12px}.fund-reference-plot{grid-template-columns:53px minmax(0,1fr);gap:6px}.fund-reference-chart{height:155px}.fund-reference-axis{height:155px;padding:12px 0;font-size:9px}.fund-reference-x-labels{font-size:9px}.fund-reference-controls{gap:10px}.fund-reference-controls label{flex:1;justify-content:space-between}.fund-reference-controls select{max-width:160px}.fund-reference-steps{width:100%;justify-content:flex-end}.fund-reference-steps button{min-width:40px;min-height:40px}}
+.stock-price-panel .fund-reference-chart,.stock-price-panel .fund-reference-axis{height:220px}
+.stock-price-panel .fund-reference-axis{padding:16px 0}
+.stock-price-panel .fund-reference-reading{min-height:48px}
+.fund-reference-horizontal{stroke:#a5b9ab;stroke-dasharray:3 5;vector-effect:non-scaling-stroke;pointer-events:none}
+.stock-price-time-axis{position:relative;height:27px;margin-top:8px;font-variant-numeric:tabular-nums}
+.stock-price-time-ticks{position:relative;height:20px;color:#7c8e81;font-size:10px}
+.stock-price-time-ticks>span{position:absolute;top:2px;white-space:nowrap}
+.stock-price-cursor-time{position:absolute;top:0;z-index:1;white-space:nowrap;background:#455f4f;color:#fff;border-radius:3px;padding:3px 6px;font-size:10px;line-height:1.4;pointer-events:none}
+.stock-price-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px;font-size:10px;color:#7c8e81}
+.stock-price-footer .text-btn{font-size:11px}
+.stock-price-footer .text-btn:disabled{opacity:.4;cursor:default}
+@media(max-width:720px){.stock-price-panel .fund-reference-chart,.stock-price-panel .fund-reference-axis{height:180px}.stock-price-time-ticks,.stock-price-cursor-time,.stock-price-footer{font-size:9px}.stock-price-time-ticks>span{letter-spacing:-.4px}}

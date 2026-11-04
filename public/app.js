@@ -2,7 +2,7 @@ import { readEventStream } from './sse.js';
 import { marketPageHTML, marketBriefsHTML } from './markets.js';
 import { monthlyPageHTML } from './monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from './watchboard.js';
-import { fundReferenceHTML } from './fund-reference.js';
+import { fundReferenceHTML, updateReferenceChartCursor } from './fund-reference.js';
 import { stockMarketHTML } from './stock-market.js';
 
 function adviceText(value) {
@@ -54,7 +54,7 @@ const percent = value => value === null || value === undefined ? '—' : value.t
 const stockPercent = m => m.stockRatioMax!=null && Math.abs(m.stockRatioMax-m.stockRatio)>.01 ? percent(m.stockRatio)+'–'+percent(m.stockRatioMax) : percent(m.stockRatio);
 const today = (timeZone='Asia/Shanghai') => new Intl.DateTimeFormat('en-CA', {timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const typeNames = {cash:'现金与存款',stock:'股票',fund:'基金与 ETF',bond:'债券',gold_accum:'积存金',gold_physical:'实物黄金',gold_margin:'保证金黄金',insurance:'保险',other:'其他资产'};
-const routes = [['dashboard','overview','财务总览'],['assets','wallet','资产与负债'],['cashflow','flow','收入与计划'],['us-market','chart','美国市场'],['hk-market','chart','港股市场'],['assistant','spark','个人助手'],['reports','report','每日总结'],['settings','settings','设置']];
+const routes = [['dashboard','overview','财务总览'],['assets','wallet','资产与负债'],['funds','chart','基金'],['cashflow','flow','收入与计划'],['us-market','chart','美国市场'],['hk-market','chart','港股市场'],['assistant','spark','个人助手'],['reports','report','每日总结'],['settings','settings','设置']];
 let data, auth, route = 'dashboard', assetFilter = 'all', settingsTab = 'ai', selectedReport = '', pending = null, chatBusy = false, chatDraft = '', chatError = '', chatPendingMessage = '';
 let chatStreamText='',chatStage='thinking',chatAbort=null;
 let chatToolCalls=[];
@@ -92,7 +92,7 @@ async function preserveChatView(value) {
   } else if(previous&&previous.conversation===null){value.conversation=null;value.messages=[];}
   return value;
 }
-let selectedTrendDay='',trendRange='recent',assetQuery='',stockMarketFilter='all',reportBusy=false,navCollapsed=false;
+let selectedTrendDay='',trendRange='recent',assetQuery='',fundQuery='',fundView='holdings',fundWatchBusy=false,stockMarketFilter='all',reportBusy=false,navCollapsed=false;
 const usMarketPages=[['us-monthly','chart','纳指月度表现'],['us-quotes','chart','美股行情']];
 const allRoutes=[...routes,...usMarketPages];
 let usMarketExpanded=false,renderedRoute='';
@@ -186,6 +186,42 @@ function paintAssetResults() {
   $('#asset-result-count').textContent=assetResultCount(assets);
   $('#clear-asset-search').hidden=!assetQuery;
 }
+function filteredFunds() {
+  const query=fundQuery.trim().toLocaleLowerCase();
+  return sortPortfolioAssets(data.state.assets.filter(a=>a.type==='fund'&&(!query||[a.name,a.fund?.code,a.account].some(value=>String(value??'').toLocaleLowerCase().includes(query)))));
+}
+function filteredFundWatchlist() {
+  const query=fundQuery.trim().toLocaleLowerCase();
+  return (data.state.fundWatchlist||[]).filter(f=>!query||[f.name,f.code].some(value=>value.toLocaleLowerCase().includes(query)));
+}
+const fundResultCount=assets=>`${assets.length} / ${fundView==='watchlist'?(data.state.fundWatchlist||[]).length:data.state.assets.filter(a=>a.type==='fund').length} 项${fundView==='watchlist'?'自选':''}基金`;
+function fundWatchTable(assets) {
+  return `<div class="table-scroll"><table><thead><tr><th>基金名称</th><th>单位净值</th><th>日涨跌</th><th>净值日期</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>${assets.map(f=>`<tr><td><div class="asset-name"><span><strong><button type="button" class="asset-title" data-action="asset-price-history" data-id="watch-fund-${esc(f.code)}" aria-label="${esc(f.name)}自选详情">${esc(f.name)}</button></strong><small>${esc(f.code)}</small></span></div></td><td class="money">${Number.isFinite(f.valuation?.price)?quoteNumber(f.valuation.price):'待更新'}</td><td>${f.movement?`<span class="price-movement ${movementClass(f.movement.percent)}"><strong>${signed(f.movement.percent)}%</strong></span>`:'<span class="muted">—</span>'}</td><td class="asset-date" title="${esc(f.valuation?.source||'')}">${esc(f.valuation?.date||'—')}${f.valuation?.status==='pending'?`<small class="valuation-note">${esc(f.valuation.message||'等待净值')}</small>`:''}</td><td><div class="actions-cell"><button type="button" class="text-btn row-action" data-action="asset-price-history" data-id="watch-fund-${esc(f.code)}">详情</button><button type="button" class="text-btn row-action" data-action="remove-fund-watch" data-code="${esc(f.code)}" aria-label="移除自选${esc(f.name)}">移除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+}
+function fundResultsHTML(assets) {
+  if(fundView==='watchlist'){
+    if(assets.length)return fundWatchTable(assets);
+    if(!fundQuery.trim())return empty('还没有自选基金','添加你想关注的基金，清仓后也能继续查看净值与走势。',button('add-fund-watch','添加自选','plus','soft'));
+  }
+  if(assets.length)return assetTable(assets);
+  if(fundQuery.trim())return empty('没有匹配的基金','试试其他基金名称、代码或账户。',button('clear-fund-search','清空搜索','close','soft'));
+  return empty('还没有登记基金','添加基金代码与持有份额，查看净值、持仓占比和盈亏。',button('add-fund','添加第一只基金','plus','soft'));
+}
+function paintFundResults() {
+  const assets=fundView==='watchlist'?filteredFundWatchlist():filteredFunds();
+  $('#fund-results').innerHTML=fundResultsHTML(assets);
+  $('#fund-result-count').textContent=fundResultCount(assets);
+  $('#clear-fund-search').hidden=!fundQuery;
+}
+function fundWatchDialog() {
+  showDialog('添加自选基金','输入基金代码，已有基金会自动带入名称。',`<form id="fund-watch-form"><div class="form-grid">${field('基金代码','code','',{type:'text',required:true,maxlength:6,placeholder:'六位基金代码'})}${field('基金名称（选填）','name','',{type:'text',maxlength:120})}</div><div class="form-actions"><button type="button" class="btn btn-secondary" data-action="close-dialog">取消</button><button type="submit" class="btn btn-primary">加入自选</button></div></form>`);
+}
+async function refreshFundWatchlist(code) {
+  if(fundWatchBusy)return;fundWatchBusy=true;if(route==='funds')render();
+  try{data=await preserveChatView(await api('/market/fund-watchlist/refresh',{method:'POST',body:code?{code}:{}}));toast(data.result.errors.length?'部分净值待更新，已保留上次记录':'自选净值已更新');}
+  catch(error){toast(error.message);}
+  finally{fundWatchBusy=false;if(route==='funds')render();}
+}
 const marketViews={US:null,HK:null},marketBusy={US:false,HK:false},marketAttempted={US:false,HK:false},marketSelections={US:{},HK:{}},marketErrors={US:'',HK:''};
 const currentMarket=()=>route==='us-market'?'US':route==='hk-market'?'HK':null;
 async function loadMarket(market,force=false,poll=false) {
@@ -244,7 +280,7 @@ function render() {
   route = location.hash.slice(1).split('?')[0] || 'dashboard'; if (!allRoutes.some(r=>r[0]===route)) route='dashboard';
   if(usMarketPages.some(([r])=>r===route)&&renderedRoute!==route)usMarketExpanded=true;renderedRoute=route;
   if (!auth?.authenticated || !data) return;
-  $('#app').innerHTML = `<div class="workspace${navCollapsed?' nav-collapsed':''}"><aside id="main-sidebar" class="sidebar"><nav class="nav" aria-label="主导航">${navigationHTML()}<button class="mobile-nav-more ${['us-market','hk-market','reports','settings'].includes(route)?'active':''}" data-action="more-pages" aria-haspopup="dialog" aria-label="更多页面">更多</button></nav><div class="sidebar-bottom workspace-status">${auth.preview?'本机访问':'已登录'}</div></aside><div class="app-main"><header class="topbar"><div class="workspace-breadcrumb"><button class="text-btn workspace-toggle" data-action="toggle-sidebar" aria-controls="main-sidebar" aria-expanded="${!navCollapsed}">${navCollapsed?'显示导航':'收起导航'}</button><span class="breadcrumb-divider">/</span><span>${usMarketPages.some(([r])=>r===route)?'美国市场 / ':''}${allRoutes.find(([r])=>r===route)?.[2]}</span></div><div class="workspace-toolbar"><span>${new Intl.DateTimeFormat('zh-CN',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(new Date())}</span><button class="text-btn" data-action="account">数据与备份</button></div></header><main class="content${route==='assistant'?' content-assistant':''}">${data.state.isDemo ? `<div class="demo-banner"><span>演示数据，均为虚构金额。</span><button data-action="reset">清空并开始记账</button></div>`:''}${({dashboard:dashboard,assets:assetsPage,cashflow:cashflowPage,assistant:assistantPage,reports:reportsPage,settings:settingsPage,'us-quotes':()=>watchboardPageHTML(watchboardView,{mode:watchboardMode,query:watchboardQuery,loading:watchboardBusy,error:watchboardError}),'us-monthly':()=>monthlyPageHTML(monthlyView,{loading:monthlyBusy,error:monthlyError,selectedPeriod:monthlySelected}),'us-market':()=>marketPage('US'),'hk-market':()=>marketPage('HK')}[route])()}</main></div></div>`;
+  $('#app').innerHTML = `<div class="workspace${navCollapsed?' nav-collapsed':''}"><aside id="main-sidebar" class="sidebar"><nav class="nav" aria-label="主导航">${navigationHTML()}<button class="mobile-nav-more ${['funds','us-market','hk-market','reports','settings'].includes(route)?'active':''}" data-action="more-pages" aria-haspopup="dialog" aria-label="更多页面">更多</button></nav><div class="sidebar-bottom workspace-status">${auth.preview?'本机访问':'已登录'}</div></aside><div class="app-main"><header class="topbar"><div class="workspace-breadcrumb"><button class="text-btn workspace-toggle" data-action="toggle-sidebar" aria-controls="main-sidebar" aria-expanded="${!navCollapsed}">${navCollapsed?'显示导航':'收起导航'}</button><span class="breadcrumb-divider">/</span><span>${usMarketPages.some(([r])=>r===route)?'美国市场 / ':''}${allRoutes.find(([r])=>r===route)?.[2]}</span></div><div class="workspace-toolbar"><span>${new Intl.DateTimeFormat('zh-CN',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(new Date())}</span><button class="text-btn" data-action="account">数据与备份</button></div></header><main class="content${route==='assistant'?' content-assistant':''}">${data.state.isDemo ? `<div class="demo-banner"><span>演示数据，均为虚构金额。</span><button data-action="reset">清空并开始记账</button></div>`:''}${({dashboard:dashboard,assets:assetsPage,funds:fundsPage,cashflow:cashflowPage,assistant:assistantPage,reports:reportsPage,settings:settingsPage,'us-quotes':()=>watchboardPageHTML(watchboardView,{mode:watchboardMode,query:watchboardQuery,loading:watchboardBusy,error:watchboardError}),'us-monthly':()=>monthlyPageHTML(monthlyView,{loading:monthlyBusy,error:monthlyError,selectedPeriod:monthlySelected}),'us-market':()=>marketPage('US'),'hk-market':()=>marketPage('HK')}[route])()}</main></div></div>`;
   if(route==='us-monthly'&&!monthlyAttempted)void loadMonthly();
   if(route==='us-quotes'&&!watchboardAttempted.has(watchboardMode))void loadWatchboard();
   restoreFormDrafts();
@@ -365,6 +401,7 @@ function priceHistoryChartHTML(asset,items,selectedDate='') {
 }
 function instrumentBasicsHTML(asset,details) {
   const cell=(label,value,help='')=>`<div class="instrument-stat"><span>${label}</span><strong${help?` title="${esc(help)}"`:''}>${value}</strong></div>`;
+  if(asset.watchOnly)return `<section class="instrument-basics"><h3>基金资料</h3><div class="instrument-stats">${cell('基金代码',esc(asset.fund.code))}${cell('净值币种',esc(asset.currency))}</div><p class="instrument-note">自选基金 · 关注净值与参考行情</p></section>`;
   if(asset.type==='fund')return `<section class="instrument-basics"><h3>基金与持仓资料</h3><div class="instrument-stats">${cell('基金代码',esc(asset.fund?.code||'—'))}${cell('净值币种',esc(asset.currency))}${cell('已登记份额',Number.isFinite(asset.quantity)?quoteNumber(asset.quantity)+' 份':'—')}${cell('已登记累计分红',Number.isFinite(asset.reported?.dividends)?quoteNumber(asset.reported.dividends)+' '+esc(asset.currency):'未登记')}</div><p class="instrument-note">分红为${asset.reported?.date?esc(asset.reported.date)+' 的':'你的'}持仓累计记录，不是基金每份派息；基金不使用个股 PE 口径。</p></section>`;
   if(!asset.security)return '<section class="instrument-basics"><h3>基础资料</h3><p class="instrument-note">补充股票代码后可读取 PE、股息等基础资料。</p></section>';
   if(!details)return '<section class="instrument-basics" aria-busy="true"><h3>估值与股息</h3><p class="instrument-note">正在读取基础资料…</p></section>';
@@ -398,11 +435,14 @@ function selectReferencePoint(chart,index,focus='chart') {
   if(!Number.isInteger(index)||index<0||index>=points.length)return;
   const point=points[index];
   view[field]=index===points.length-1?null:point.time?series.date+' '+point.time:point.date;
+  view.referencePoint=view.referenceVolumePoint=view[field];
+  if(focus==='pointer'&&updateReferenceChartCursor($('#fund-reference-view'),view.referenceData,view.referenceMode,index))return;
   paintFundReference(view);
   $(focus==='select'?`[data-fund-reference-select][data-chart="${chart}"]`:`[data-reference-chart="${chart}"]`)?.focus?.({preventScroll:true});
 }
 function paintFundReference(view) {
   if(activePriceHistory!==view||!$('#dialog').open||!$('#fund-reference-view'))return;
+  view.referencePointerIndex=null;
   const reference=view.referenceData;
   if(view.referenceMode==='intraday'&&!reference?.intraday?.points?.length&&reference?.history?.points?.length)view.referenceMode='daily';
   const {index}=referenceChartSelection(view,'price'),volume=referenceChartSelection(view,'volume');
@@ -425,7 +465,8 @@ async function loadFundReference(view,{initial=false}={}) {
   finally{view.referenceBusy=false;paintFundReference(view);scheduleFundReference(view);}
 }
 async function priceHistoryDialog(id){
-  const a=data.state.assets.find(a=>a.id===id);if(!a)return;
+  const watched=(data.state.fundWatchlist||[]).find(f=>'watch-fund-'+f.code===id);
+  const a=data.state.assets.find(a=>a.id===id)||(watched?{id,name:watched.name,type:'fund',currency:'CNY',fund:{code:watched.code,autoNav:true},watchOnly:true}:null);if(!a)return;
   clearTimeout(activePriceHistory?.referenceTimer);
   showDialog(a.name+' · 涨跌记录',a.valuation?.source||'', '<div id="price-history-view"><p class="inline-note">正在读取…</p></div>');
   const view={asset:a,items:[],selectedDate:'',referenceMode:'intraday',referencePoint:null,referenceVolumePoint:null};activePriceHistory=view;
@@ -444,6 +485,14 @@ function ledgerEntriesHTML() {
   const entries=data.ledgerEntries||[];if(!entries.length)return '';
   const pending=entries.filter(e=>e.status==='pending').length,names={pending:'待入账',applied:'已入账',blocked:'需核对',cancelled:'已取消'};
   return `<details class="ledger-records" ${pending?'open':''}><summary>对话记账${pending?' · '+pending+' 笔待入账':''}</summary>${entries.slice(0,12).map(e=>`<div class="ledger-record"><div><strong>${esc(e.label)}</strong><small>${esc(e.date)} · ${names[e.status]||esc(e.status)}${e.amount!=null?' · '+Number(e.amount).toLocaleString('zh-CN',{maximumFractionDigits:2})+' '+esc(e.asset.currency):''}${e.cashSource?' · '+(e.cashSource==='outside'?'额外投入／账外资金':'已登记现金'):''}${e.estimated?' · 按价格估算':''}</small>${e.status==='pending'?'<p>等待指定日期的收盘价／披露净值，取得后自动更新持仓与现金。</p>':e.message?'<p>'+esc(e.message)+'</p>':''}</div>${e.status==='pending'?`<button type="button" class="text-btn" data-action="cancel-ledger-entry" data-id="${esc(e.id)}">取消</button>`:''}</div>`).join('')}</details>`;
+}
+function fundsPage() {
+  const watch=fundView==='watchlist',assets=watch?filteredFundWatchlist():filteredFunds(),allocation=fundAllocation();
+  const actions=watch?button('refresh-fund-watchlist',fundWatchBusy?'更新中…':'更新净值','refresh','secondary',fundWatchBusy?'disabled':'')+button('add-fund-watch','添加自选','plus','primary'):button('market-refresh','更新行情','refresh')+button('add-fund','添加基金','plus','primary');
+  return `${heading('基金','查看持仓，关注自选基金。',actions)}
+    <div class="filter-bar fund-view-tabs" role="group" aria-label="基金视图">${[['holdings','持仓'],['watchlist','自选']].map(([value,label])=>`<button type="button" class="filter ${fundView===value?'active':''}" data-action="fund-view" data-view="${value}" aria-pressed="${fundView===value}">${label}</button>`).join('')}</div>
+    <div class="asset-tools"><label class="asset-search"><input id="fund-search" type="search" aria-label="搜索基金" placeholder="${watch?'搜索自选基金名称或代码':'搜索基金名称、代码或账户'}" value="${esc(fundQuery)}"/><button id="clear-fund-search" type="button" class="icon-btn" data-action="clear-fund-search" aria-label="清空基金搜索" ${fundQuery?'':'hidden'}>${icon('close',14)}</button></label><span id="fund-result-count" class="asset-result-count" role="status">${fundResultCount(assets)}</span></div>
+    <div class="card">${watch?`<div class="card-header"><h2>自选基金</h2><p>最新披露净值</p></div>`:`<div class="asset-summary">${allocation.count?allocationSummaryHTML('fund',allocation):'<div><span>基金持仓</span><strong>0 项</strong></div>'}</div>`}<div id="fund-results">${fundResultsHTML(assets)}</div></div>`;
 }
 function assetsPage() {
   const s=data.state,m=data.metrics;
@@ -802,6 +851,12 @@ function calculationDialog() {
   showDialog('计算口径','基准币种为人民币，以下金额来自当前已登记资料。',`<div class="comparison">${[['总资产',money(m.totalAssets)],['总负债（含负权益）',money(m.totalDebt)],['配置资产池净值',money(m.pool)],['配置池内股票敞口',money(m.equity)],['配置池内基金估值',money(m.fundValue)],['基金配置比例',percent(m.fundRatio)],['股票比例',stockPercent(m)],['应急预留',money(m.emergency)],['专项预留',money(m.earmarked)],['可支配现金',money(m.availableCash)]].map(([l,v])=>`<div class="compare-row" style="grid-template-columns:1.3fr 1fr"><span>${l}</span><span>${v}</span></div>`).join('')}</div><p class="inline-note">股票比例采用同一配置池的分子与分母；房产、车辆、应急及专项预留不在配置池中。保险默认在池外，可单独调整。投资融资从池净值扣除。基金单独统计，不折算计入股票比例；这不是格雷厄姆原著的纯股债比例。必要支出储备包括非受限现金，扣除专项款，可包含应急预留。</p>`);
 }
 
+document.addEventListener('pointermove',event=>{
+  const target=event.target.closest?.('[data-reference-hover] [data-action="fund-reference-point"]');
+  if(!target||!activePriceHistory||activePriceHistory.referencePointerIndex===target.dataset.index)return;
+  activePriceHistory.referencePointerIndex=target.dataset.index;
+  selectReferencePoint(target.dataset.chart,Number(target.dataset.index),'pointer');
+});
 document.addEventListener('keydown',event=>{
   if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-action="market-point"]')){event.preventDefault();event.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}
 });
@@ -833,13 +888,22 @@ document.addEventListener('click',async event=>{
     if(action==='refresh-markets')return loadMarket(currentMarket(),true);
     if(action==='market-series'){marketSelections[currentMarket()]={seriesKey:target.dataset.key};return render();}
     if(action==='market-point'){marketSelections[currentMarket()].selectedDate=target.dataset.date;return render();}
-    if(action==='more-pages'){showDialog('更多页面','市场、日报与个人设置',`<div class="mobile-page-menu">${routes.filter(([r])=>['us-market','hk-market','reports','settings'].includes(r)).map(([r,,label])=>`<a href="#${r}" class="${route===r?'active':''}" data-action="navigate" data-route="${r}">${label}</a>`).join('')}</div>`);return;}
+    if(action==='more-pages'){showDialog('更多页面','基金、市场、日报与个人设置',`<div class="mobile-page-menu">${routes.filter(([r])=>['funds','us-market','hk-market','reports','settings'].includes(r)).map(([r,,label])=>`<a href="#${r}" class="${route===r?'active':''}" data-action="navigate" data-route="${r}">${label}</a>`).join('')}</div>`);return;}
     if(action==='navigate'){event.preventDefault();closeDialog();return routeTo(target.dataset.route);}
     if(action==='discard-draft'){formDrafts.delete(target.dataset.form);return render();}
     if(action==='clear-asset-search'||action==='clear-asset-filters'){assetQuery='';if(action==='clear-asset-filters'){assetFilter='all';stockMarketFilter='all';}render();$('#asset-search').focus();return;}
     if(action==='stop-chat')return stopChat();
     if(action==='resume-chat'){void resumeChat();return;}
     if(action==='close-dialog')return closeDialog();
+    if(action==='clear-fund-search'){fundQuery='';$('#fund-search').value='';paintFundResults();$('#fund-search').focus();return;}
+    if(action==='fund-view'){if(['holdings','watchlist'].includes(target.dataset.view)){fundView=target.dataset.view;render();}return;}
+    if(action==='add-fund-watch')return fundWatchDialog();
+    if(action==='refresh-fund-watchlist')return refreshFundWatchlist();
+    if(action==='remove-fund-watch'){
+      const next=structuredClone(data.state);next.fundWatchlist=(next.fundWatchlist||[]).filter(f=>f.code!==target.dataset.code);
+      await saveState(next,'移除自选基金 · '+target.dataset.code);return toast('已移除自选');
+    }
+    if(action==='add-fund')return assetDialog(undefined,{type:'fund',currency:'CNY',inPool:true});
     if(action==='add-asset'||action==='edit-asset')return assetDialog(target.dataset.id);
     if(action==='search-security')return findStock();
     if(action==='select-security'){
@@ -917,7 +981,7 @@ document.addEventListener('click',async event=>{
     if(action==='logout'){await api('/auth/logout',{method:'POST',body:{}});auth.authenticated=false;formDrafts.clear();renderAuth();return;}
   }catch(e){toast(e.message);if(target.isConnected)target.disabled=false;}
 });
-document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
+document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#fund-search')){fundQuery=event.target.value;paintFundResults();return;}if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
   if(event.target.matches('[data-fund-reference-select]')){selectReferencePoint(event.target.dataset.chart,Number(event.target.value),'select');return;}
@@ -950,6 +1014,15 @@ document.addEventListener('submit',async event=>{
   const formId=form.getAttribute('id'), f=new FormData(form), submits=[...form.querySelectorAll('[type=submit]')];submits.forEach(button=>button.disabled=true);
   try{
     if(formId==='auth-form'){await api(auth.initialized?'/auth/login':'/auth/setup',{method:'POST',body:{password:f.get('password')}});auth.authenticated=true;auth.initialized=true;data=await api('/bootstrap');render();return;}
+    if(formId==='fund-watch-form'){
+      const code=String(f.get('code')||'').trim();if(!/^\d{6}$/.test(code))throw new Error('基金代码需要为六位数字');
+      const next=structuredClone(data.state);next.fundWatchlist=next.fundWatchlist||[];
+      if(next.fundWatchlist.some(item=>item.code===code)){closeDialog();fundView='watchlist';render();return toast('这只基金已在自选中');}
+      const asset=next.assets.find(a=>a.type==='fund'&&a.fund?.code===code),name=String(f.get('name')||'').trim()||asset?.name||'基金 '+code;
+      next.fundWatchlist.push({code,name});fundView='watchlist';await saveState(next,'添加自选基金 · '+name);closeDialog();toast('已加入自选');
+      if(!data.state.fundWatchlist.find(item=>item.code===code)?.valuation?.price)void refreshFundWatchlist(code);
+      return;
+    }
     if(formId==='asset-form'){
       const next=structuredClone(data.state), id=f.get('id')||crypto.randomUUID(),type=f.get('type');
       const item={...next.assets.find(a=>a.id===id),id,type,name:f.get('name'),account:f.get('account'),currency:f.get('currency'),value:numberValue(f,'value'),asOf:f.get('asOf')||today(),inPool:f.has('inPool'),restricted:f.has('restricted'),emergency:type==='cash'?numberValue(f,'emergency')||0:0,earmarked:type==='cash'?numberValue(f,'earmarked')||0:0,equityRatio:type==='fund'?numberValue(f,'equityRatio'):type==='insurance'?numberValue(f,'insuranceEquityRatio'):null,quantity:numberValue(f,'quantity'),unit:f.get('unit'),issuer:f.get('issuer'),notional:type==='gold_margin'?numberValue(f,'notional'):null,available:type==='gold_margin'?numberValue(f,'available'):null,direction:f.get('direction')};
@@ -1010,7 +1083,7 @@ document.addEventListener('submit',async event=>{
       await saveState(next,'修改投资纪律与日报偏好',formId);return toast('纪律与偏好已保存');
     }
     if(formId==='reset-form'){
-      data=await api('/reset',{method:'POST',body:{revision:data.state.revision,confirmation:f.get('confirmation')}});closeDialog();formDrafts.clear();assetQuery='';assetFilter='all';stockMarketFilter='all';chatDraft='';chatError='';routeTo('dashboard');return toast('已清空档案，可以开始记录你的财务');
+      data=await api('/reset',{method:'POST',body:{revision:data.state.revision,confirmation:f.get('confirmation')}});closeDialog();formDrafts.clear();assetQuery='';fundQuery='';fundView='holdings';assetFilter='all';stockMarketFilter='all';chatDraft='';chatError='';routeTo('dashboard');return toast('已清空档案，可以开始记录你的财务');
     }
   }catch(e){if(formId==='auth-form')$('#auth-error').textContent=e.message;else toast(e.message);}
   finally{submits.forEach(button=>{if(button.isConnected)button.disabled=false;});}
