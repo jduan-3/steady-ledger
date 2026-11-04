@@ -16,6 +16,25 @@ async function setup(t,options={}) {
   return {app,request,base,dir};
 }
 
+test('基金搜索需登录，只向公开目录发送关键词且不修改财务档案',async t=>{
+  const {request,app}=await setup(t);
+  assert.equal((await request('/market/funds/search?q=008164')).status,401);
+  await request('/auth/setup','POST',{password:'search-test-password'});
+  const before=app.store.state({raw:true}),nativeFetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input,options)=>{
+    const url=new URL(input);
+    if(url.hostname==='fundsuggest.eastmoney.com'){
+      assert.equal(url.searchParams.get('key'),'南方');assert.equal(url.searchParams.size,2);
+      assert.equal(options.headers.Cookie,undefined);
+      return Response.json({ErrCode:0,Datas:[{CATEGORY:700,CODE:'008164',NAME:'南方基金',FundBaseInfo:{FCODE:'008164',FTYPE:'指数型'}}]});
+    }
+    return nativeFetch(input,options);
+  });
+  const response=await request('/market/funds/search?q='+encodeURIComponent('南方'));assert.equal(response.status,200);assert.equal(response.body.items[0].code,'008164');
+  assert.deepEqual(app.store.state({raw:true}),before);
+  assert.equal((await request('/market/funds/search?q=')).status,400);
+});
+
 test('基金自选持久保存、独立刷新与历史详情沿用登录保护，不创建持仓',async t=>{
   const {request,app}=await setup(t);
   assert.equal((await request('/market/fund-watchlist/refresh','POST',{})).status,401);

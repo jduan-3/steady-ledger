@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../src/store.mjs';
 import { calculate, validateState, initialState } from '../src/domain.mjs';
-import { refreshFundNAV } from '../src/funds.mjs';
+import { refreshFundNAV, searchFunds } from '../src/funds.mjs';
 import { dailyValuation } from '../src/valuation.mjs';
 
 function setup(t) {
@@ -15,6 +15,20 @@ function setup(t) {
   store.save(state,0);return store;
 }
 const reply=(date='2026-10-23')=>({ok:true,json:async()=>({ErrCode:0,Data:{LSJZList:[{FSRQ:date,DWJZ:'2.6',LJJZ:'3.5'},{FSRQ:'2026-10-22',DWJZ:'2.5',LJJZ:'3.4'}]}})});
+
+test('基金名称与代码搜索校验标的身份、保留前导零、离线回退且不改动账本',async t=>{
+  const store=setup(t),before=store.state({raw:true});
+  const row={CATEGORY:700,CODE:'008164',NAME:'南方标普红利低波50ETF联接C',JP:'NFBPHLDB50ETFLJC',FundBaseInfo:{FCODE:'008164',FTYPE:'指数型-股票',OTHERNAME:'南方大盘红利50C'}};
+  const fetchImpl=async url=>{assert.equal(url.hostname,'fundsuggest.eastmoney.com');assert.equal(url.searchParams.get('key'),'008164');return Response.json({ErrCode:0,Datas:[row,{...row,CATEGORY:1,CODE:'600000'},{...row,CODE:'8164'},{...row,CODE:'006789'},row]});};
+  const found=await searchFunds(store,' 008164 ',{fetchImpl});assert.deepEqual(found.items,[{code:'008164',name:row.NAME,type:'指数型-股票'}]);assert.equal(found.message,'');
+  const offline=async()=>{throw new Error('offline');};
+  for(const query of ['红利','008164','南方大盘红利50C','NFBPHLDB']){
+    const result=await searchFunds(store,query,{fetchImpl:offline});assert.equal(result.items[0].code,'008164');assert.match(result.message,/在线搜索暂不可用/);
+  }
+  assert.equal((await searchFunds(store,'不存在的基金',{fetchImpl:offline})).items.length,0);
+  assert.deepEqual(store.state({raw:true}),before);
+  for(const query of ['',null,'a'.repeat(81)])await assert.rejects(()=>searchFunds(store,query,{fetchImpl}),/请输入/);
+});
 
 test('截图校准保留确认金额和成本，公开净值估值单列，更新日期的净值才恢复自动估值',t=>{
  const store=setup(t),s=store.state();s.assets[0]={...s.assets[0],quantity:20453,fund:{code:'123456',autoNav:true,valuationOverride:{value:20089.48,quantity:20453,date:'2026-10-28',navDate:'2026-10-27',dailyProfit:-878.02,dailyProfitDate:'2026-10-27'}},costBasis:{amount:22816.61,quantity:20453,currency:'CNY',method:'inferred_pnl'}};store.save(s,s.revision);

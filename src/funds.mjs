@@ -3,6 +3,32 @@ const day = value => {
   return value;
 };
 
+export async function searchFunds(store,query,{fetchImpl=fetch}={}) {
+  if(typeof query!=='string'||!query.trim()||query.trim().length>80)throw new Error('请输入 1 至 80 个字符的基金名称或代码');
+  query=query.trim();
+  const normalize=value=>String(value??'').normalize('NFKC').replace(/\s+/g,'').toUpperCase(),key=normalize(query);
+  const state=store.state({raw:true}),catalog=store.getKV('fund_catalog',{items:[]});
+  const byCode=new Map(catalog.items.map(f=>[f.code,f]));
+  for(const f of [...state.assets.filter(a=>a.type==='fund'&&a.fund?.code).map(a=>({code:a.fund.code,name:a.name})),...(state.fundWatchlist||[])])if(!byCode.has(f.code))byCode.set(f.code,{code:f.code,name:f.name});
+  let message='';const remoteCodes=new Set();
+  try {
+    const url=new URL('https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx');
+    url.search=new URLSearchParams({m:'1',key:query});
+    const response=await fetchImpl(url,{headers:{Referer:'https://fund.eastmoney.com/','User-Agent':'Steady/1.0'},signal:AbortSignal.timeout(8000)}),body=await response.json();
+    if(!response.ok||body.ErrCode!==0||!Array.isArray(body.Datas))throw new Error('基金搜索返回格式无效');
+    for(const row of body.Datas){
+      if(row.CATEGORY!==700||typeof row.CODE!=='string'||!/^\d{6}$/.test(row.CODE)||typeof row.NAME!=='string'||!row.NAME.trim()||row.NAME.length>120||row.FundBaseInfo?.FCODE&&row.FundBaseInfo.FCODE!==row.CODE)continue;
+      remoteCodes.add(row.CODE);
+      byCode.set(row.CODE,{code:row.CODE,name:row.NAME.trim(),type:String(row.FundBaseInfo?.FTYPE||'').slice(0,80),keywords:[row.JP,row.FundBaseInfo?.OTHERNAME].filter(Boolean).join(' ').slice(0,1000)});
+    }
+    store.setKV('fund_catalog',{items:[...byCode.values()].slice(-5000)});
+  } catch {message='在线搜索暂不可用，已显示本地匹配；也可直接填写六位代码和基金名称。';}
+  const rank=f=>Number(f.code===key)*4+Number(normalize(f.name)===key)*2;
+  const items=[...byCode.values()].filter(f=>remoteCodes.has(f.code)||[f.code,f.name,f.keywords].some(value=>normalize(value).includes(key)))
+    .sort((a,b)=>rank(b)-rank(a)||a.code.localeCompare(b.code)).slice(0,30).map(({code,name,type})=>({code,name,type:type||''}));
+  return {items,message,source:'天天基金公开基金搜索',sourceUrl:'https://fund.eastmoney.com/'};
+}
+
 export function applyFundNAV(input, getKV) {
   const state = structuredClone(input);
   state.fundWatchlist=(state.fundWatchlist||[]).map(f=>{

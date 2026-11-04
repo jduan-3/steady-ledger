@@ -11,7 +11,7 @@ export function initialState() {
     profile: { income: null, expenses: null, incomeStability: 'unknown', payday: 10, emergencyMonths: 6, note: '', autoIncome:{enabled:false,cashAssetId:'',startsOn:'',lastPeriod:''}, background: { displayName: DEFAULT_DISPLAY_NAME } },
     policy: { stockCaution: 50, stockLimit: null, debtRatioLimit: null, issuerLimit: null, buyTranchePercent: null, staleDays: 7, grid: {...DEFAULT_GRID} },
     preferences: { timeZone: 'Asia/Shanghai', reportTime: '20:00', rates: { CNY: 1 }, autoFx: true },
-    assets: [], debts: [], upcoming: [], decisions: [], fundWatchlist: []
+    assets: [], debts: [], upcoming: [], decisions: [], fundWatchlist: [], buyPlans: []
   };
 }
 
@@ -89,6 +89,17 @@ export function validateState(input) {
   for (const key of ['assets', 'debts', 'upcoming', 'decisions']) if (!Array.isArray(input[key]) || input[key].length > 5000) throw new Error(`${key}数据格式错误或记录过多`);
   const usedIds = new Set();
   const id = (v) => { const out = text(v || randomUUID(), '记录编号', 100); if (usedIds.has(out)) throw new Error('存在重复的记录编号'); usedIds.add(out); return out; };
+  const buyPlans=input.buyPlans??[];
+  if(!Array.isArray(buyPlans)||buyPlans.length>5000)throw new Error('买入待办格式错误或记录过多');
+  clean.buyPlans=buyPlans.map(plan=>{
+    if(!plan||typeof plan!=='object')throw new Error('买入待办格式错误');
+    const name=text(plan.name,'买入标的名称');if(!name)throw new Error('买入标的名称不能为空');
+    const status=plan.status??'pending';if(!['pending','completed','cancelled'].includes(status))throw new Error('买入待办状态无效');
+    const currency=plan.currency??'CNY';if(!/^[A-Z]{3}$/.test(currency))throw new Error('计划币种无效');
+    return {id:id(plan.id),name,code:text(plan.code??'','标的代码',40),amount:number(plan.amount,'计划买入金额',{optional:true,min:0.01}),currency,
+      plannedDate:plan.plannedDate?dateField(plan.plannedDate,'计划买入日期'):'',condition:text(plan.condition??'','买入条件与备注',1000),status,
+      createdOn:dateField(plan.createdOn||nowDate(clean.preferences.timeZone),'待办创建日期'),completedOn:status==='completed'?dateField(plan.completedOn,'执行日期'):''};
+  });
   clean.assets = input.assets.map(a => {
     if (!ASSET_TYPES.includes(a.type)) throw new Error('不支持的资产类型');
     const instrument = a.type === 'stock' && a.security ? security(a.security) : null;

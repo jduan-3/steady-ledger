@@ -341,6 +341,28 @@ test('行情请求失败后保留缓存，显示持续错误和重试入口',asy
  const html=h.run("marketPage('US')");assert.match(html,/保留上次数据/);assert.match(html,/重试/);assert.match(html,/role="alert"/);
 });
 
+test('市场页每十秒检查，隐藏或编辑时暂停，切回页面立即检查，其他页面保持一分钟',async()=>{
+ const requests=[],timers=[];
+ const market={market:'HK',benchmarks:[],sectors:[],portfolio:{amount:null,total:0,covered:0}};
+ const h=componentHarness(async(url,options)=>{
+  if(url==='/api/auth/status')return Response.json({authenticated:true,preview:true});
+  if(url==='/api/markets/refresh'){requests.push(JSON.parse(options.body));return Response.json(market);}
+  return Response.json(h.context.fixture);
+ });
+ h.context.setInterval=(callback,delay)=>{timers.push({callback,delay});return 0;};
+ await h.run('start()');
+ assert.deepEqual(timers.map(timer=>timer.delay),[10000,60000]);
+ h.context.market=market;h.run("route='hk-market';location.hash='#hk-market';marketViews.HK=market;");
+ await timers[0].callback();assert.equal(requests.length,1);assert.equal(requests[0].market,'HK');assert.equal(requests[0].poll,true);
+ h.context.document.visibilityState='hidden';await timers[0].callback();assert.equal(requests.length,1);
+ h.context.document.visibilityState='visible';h.nodes.get('#dialog').open=true;await timers[0].callback();assert.equal(requests.length,1);
+ h.nodes.get('#dialog').open=false;h.context.document.activeElement={matches:()=>true};await timers[0].callback();assert.equal(requests.length,1);
+ h.context.document.activeElement=null;h.run('chatBusy=true');await timers[0].callback();assert.equal(requests.length,1);
+ h.run('chatBusy=false');h.listeners.visibilitychange();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,2);
+ await timers[1].callback();assert.equal(requests.length,2);
+ h.run("route='dashboard';location.hash='#dashboard'");await timers[0].callback();assert.equal(requests.length,2);
+});
+
 test('每只股票占比按全部直接股票的人民币估值计算，包含池外股票，排除基金和现金',()=>{
  const h=componentHarness();h.run(`data.state.preferences.rates={CNY:1,HKD:.9,USD:7};data.state.assets=[
   {id:'cn',name:'人民币股票',type:'stock',currency:'CNY',value:1000,inPool:true,costBasis:{amount:99999}},
@@ -368,6 +390,61 @@ test('行情未同步但仍有已登记估值时标注暂按已有估值，紧�
  const h=componentHarness();h.run("data.state.assets=[{id:'one',name:'暂存股票',type:'stock',currency:'CNY',value:100,autoPrice:true,valuation:{status:'pending'}}];");
  assert.equal(h.run('stockAllocation().estimated'),true);assert.equal(h.run('stockAllocation().total'),100);
  assert.match(h.run('assetsPage()'),/部分行情待更新，暂按已有估值/);assert.match(h.run('assetTable(data.state.assets,true)'),/占股票组合 100\.00%/);
+});
+
+test('买入待办可编辑、执行、取消和恢复，首页只展示未执行且保留转义',async()=>{
+ const h=componentHarness(async(url,options)=>{
+   assert.equal(url,'/api/state');const payload=JSON.parse(options.body),state=validateState(payload.state);state.revision=payload.revision+1;
+   return Response.json({...h.context.fixture,state,metrics:calculate(state)});
+ });
+ const before=h.run('JSON.stringify(data.state.assets)'),click=dataset=>h.listeners.click({target:{closest:()=>({dataset})}});
+ const submit=fields=>h.listeners.submit({target:new h.Form('buy-plan-form',Object.entries(fields)),preventDefault(){}});
+ await submit({name:'<img src=x>基金',code:'008164',currency:'CNY',amount:'1000',plannedDate:'2026-11-03',condition:'确认余额后买入'});
+ const id=h.run('data.state.buyPlans[0].id');
+ let html=h.run('dashboard()');assert.match(html,/待执行买入/);assert.match(html,/008164/);assert.match(html,/已过计划日期/);assert.ok(!html.includes('<img src=x>'));
+ await submit({id,name:'调整后的计划',code:'008164',currency:'CNY',amount:'2000',plannedDate:'',condition:'分两批'});
+ assert.equal(h.run('data.state.buyPlans.length'),1);assert.equal(h.run('data.state.buyPlans[0].amount'),2000);
+ await click({action:'buy-plan-status',id,status:'completed'});assert.equal(h.run('pendingBuyPlans().length'),0);assert.match(h.run('dashboard()'),/暂无待执行买入/);
+ await click({action:'buy-plan-filter',filter:'completed'});assert.match(h.run('buyPlansPage()'),/调整后的计划/);assert.match(h.run('buyPlansPage()'),/恢复待办/);
+ await click({action:'buy-plan-status',id,status:'pending'});assert.equal(h.run('data.state.buyPlans[0].completedOn'),'');
+ await click({action:'buy-plan-status',id,status:'cancelled'});assert.equal(h.run('pendingBuyPlans().length'),0);
+ await click({action:'buy-plan-filter',filter:'cancelled'});assert.match(h.run('buyPlansPage()'),/调整后的计划/);
+ assert.equal(h.run('JSON.stringify(data.state.assets)'),before);
+ h.run("data.state.fundWatchlist=[{code:'008164',name:'自选标的'}];buyPlanDialog(undefined,'008164');");
+ assert.match(h.nodes.get('#dialog').innerHTML,/value="008164"/);assert.match(h.nodes.get('#dialog').innerHTML,/value="自选标的"/);
+});
+
+test('基金搜索结果可选择且安全转义，已关闭弹窗的迟到搜索不会覆盖新结果',async()=>{
+ let resolve;
+ const h=componentHarness(async url=>{
+   assert.match(url,/\/api\/market\/funds\/search\?q=/);
+   return new Promise(r=>{resolve=r;});
+ });
+ h.run('fundWatchDialog()');h.nodes.set('#fund-watch-form',{});h.nodes.set('#fund-watch-form [name=lookup]',{value:'南方'});
+ let searching=h.run('findFund()');resolve(Response.json({items:[{code:'008164',name:'南方<img src=x>',type:'指数型'}],message:''}));await searching;
+ assert.match(h.nodes.get('[data-fund-results]').innerHTML,/008164/);assert.match(h.nodes.get('[data-fund-results]').innerHTML,/&lt;img/);
+ await h.listeners.click({target:{closest:()=>({dataset:{action:'select-fund',index:'0'}})}});
+ assert.equal(h.nodes.get('#fund-watch-form [name=code]').value,'008164');assert.equal(h.nodes.get('#fund-watch-form [name=name]').value,'南方<img src=x>');
+ searching=h.run('findFund()');h.run('closeDialog();fundWatchDialog()');const before=h.nodes.get('[data-fund-results]').innerHTML;
+ resolve(Response.json({items:[{code:'000001',name:'旧查询'}],message:''}));await searching;assert.equal(h.nodes.get('[data-fund-results]').innerHTML,before);
+});
+
+test('只输入基金代码会查询名称并刷新净值，失败时仍可手动录入',async()=>{
+ const calls=[];let h;
+ h=componentHarness(async(url,options)=>{
+   calls.push(url);
+   if(url.startsWith('/api/market/funds/search'))return Response.json({items:[{code:'008164',name:'查询取得的基金名称'}],message:''});
+   const state=url==='/api/state'?validateState(JSON.parse(options.body).state):h.run('data.state');
+   return Response.json({...h.context.fixture,state:{...state,fundWatchlist:state.fundWatchlist.map(f=>({...f,valuation:{price:1.2}}))},metrics:calculate(state)});
+ });
+ const form=new h.Form('fund-watch-form',[['code','008164'],['name','']]);h.nodes.set('#fund-watch-form',form);
+ await h.listeners.submit({target:form,preventDefault(){}});
+ assert.equal(calls[0],'/api/market/funds/search?q=008164');assert.equal(h.run('data.state.fundWatchlist[0].name'),'查询取得的基金名称');assert.equal(h.run('data.state.assets.length'),0);
+ const offline=componentHarness(async(url,options)=>{assert.equal(url,'/api/state');return Response.json({...offline.context.fixture,state:validateState(JSON.parse(options.body).state)});});
+ // Existing NAV avoids a background request, so this case tests manual entry only.
+ offline.context.fixture.state.fundWatchlist=[];
+ await offline.listeners.submit({target:new offline.Form('fund-watch-form',[['code','006789'],['name','手动录入基金']]),preventDefault(){}});
+ assert.equal(offline.run('data.state.fundWatchlist[0].code'),'006789');assert.equal(offline.run('data.state.fundWatchlist[0].name'),'手动录入基金');
 });
 
 test('基金自选支持添加、搜索、去重和移除，清仓基金可关注且不改动资产',async()=>{

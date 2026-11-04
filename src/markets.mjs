@@ -122,18 +122,23 @@ async function fetchVIX(cached,{fetchImpl,now}) {
 }
 const pending=new WeakMap();
 export function refreshMarketOverview(store,options={}) {
-  if(pending.has(store))return pending.get(store);
-  const task=updateOverview(store,options).finally(()=>pending.delete(store));pending.set(store,task);return task;
+  let tasks=pending.get(store);
+  if(!tasks){tasks=new Map();pending.set(store,tasks);}
+  const key=options.live?options.market:'overview';
+  if(tasks.has(key))return tasks.get(key);
+  const task=updateOverview(store,options).finally(()=>{tasks.delete(key);if(!tasks.size)pending.delete(store);});
+  tasks.set(key,task);return task;
 }
 async function updateLiveQuotes(store,old,{provider,fetchImpl,now,market}) {
   const age=now-Date.parse(old.quoteAttemptedAt?.[market]||old.attemptedAt);
-  if(Number.isFinite(age)&&age>=0&&age<60000)return old;
+  if(Number.isFinite(age)&&age>=0&&age<10000)return old;
   const defs=marketDefinitions(store,market);
   const results=await Promise.allSettled([
     provider({action:'overview-live',keys:defs.filter(d=>d.key!=='HK.VHSI').map(d=>d.key)}),
     responseText('https://qt.gtimg.cn/q='+defs.map(d=>d.code).join(','),fetchImpl).then(t=>parseMarketQuotes(t,now,defs))
   ]);
-  const next={...old,quotes:{...old.quotes},quoteAttemptedAt:{...old.quoteAttemptedAt,[market]:now.toISOString()},quoteErrors:{...old.quoteErrors}};
+  const current=store.getKV(CACHE,old);
+  const next={...current,quotes:{...current.quotes},quoteAttemptedAt:{...current.quoteAttemptedAt,[market]:now.toISOString()},quoteErrors:{...current.quoteErrors}};
   const opend=results[0].status==='fulfilled'?results[0].value:null;
   if(opend)next.opend={connected:opend.global?.qot_logined===true,state:opend.global||{},message:opend.global?.qot_logined?'已连接；美股指数由公开行情补充':opend.errors?.[0]||'OpenD 暂未连接',checkedAt:now.toISOString()};
   const quotes=[];
@@ -151,7 +156,8 @@ async function updateLiveQuotes(store,old,{provider,fetchImpl,now,market}) {
 async function updateOverview(store,{provider=runOpenD,fetchImpl=fetch,now=new Date(),force=false,live=false,market}={}) {
   if(live&&!['US','HK'].includes(market))throw new Error('请选择美国或港股市场');
   const old=store.getKV(CACHE,{}),age=now-Date.parse(old.attemptedAt),interval=force?60000:old.error?5*60000:30*60000;
-  if(Number.isFinite(age)&&age>=0&&age<interval)return live?updateLiveQuotes(store,old,{provider,fetchImpl,now,market}):old;
+  if(live)return updateLiveQuotes(store,old,{provider,fetchImpl,now,market});
+  if(Number.isFinite(age)&&age>=0&&age<interval)return old;
   const defs=marketDefinitions(store),indices=MARKET_SERIES.filter(d=>d.kind==='index'),activities=MARKET_SERIES.filter(d=>d.kind==='activity');
   const results=await Promise.allSettled([
     provider({action:'overview',keys:defs.filter(d=>d.key!=='HK.VHSI').map(d=>d.key),historyKeys:[...indices.filter(d=>d.market==='HK'),...activities].map(d=>d.key)}),
@@ -161,10 +167,11 @@ async function updateOverview(store,{provider=runOpenD,fetchImpl=fetch,now=new D
     refreshBuffett(old.buffett,{fetchImpl,now}),
     refreshMarketContext(old.context,{fetchImpl,now})
   ]);
-  const next={...old,quotes:{...old.quotes},histories:{...old.histories},attemptedAt:now.toISOString(),error:null};
+  const current=store.getKV(CACHE,old);
+  const next={...current,quotes:{...current.quotes},histories:{...current.histories},attemptedAt:now.toISOString(),error:null};
   const opend=results[0].status==='fulfilled'?results[0].value:null;
   next.opend={connected:opend?.global?.qot_logined===true,state:opend?.global||{},message:opend?.global?.qot_logined?'已连接；美股指数由公开行情补充':opend?.errors?.[0]||'OpenD 暂未连接',checkedAt:now.toISOString()};
-  next.calendars={...old.calendars,...opend?.calendars};
+  next.calendars={...current.calendars,...opend?.calendars};
   let accepted=0;const acceptedMarkets=new Set();
   const put=q=>{keepFundamentals(next,q);const prev=next.quotes[q.key];if(!prev||q.date>prev.date||(q.date===prev.date&&(q.time||'')>=(prev.time||''))){next.quotes[q.key]=q;accepted++;acceptedMarkets.add(q.key.startsWith('US.')?'US':'HK');}};
   for(const r of opend?.quotes||[]){const d=defs.find(d=>d.key===r.key);if(d)try{put(normalizeMarketQuote(r,d,now));}catch{}}
@@ -180,8 +187,10 @@ async function updateOverview(store,{provider=runOpenD,fetchImpl=fetch,now=new D
   if(results.at(-1).status==='fulfilled')next.context=results.at(-1).value;
   if(!accepted)next.error='行情更新失败，保留上次数据';
   else next.updatedAt=now.toISOString();
-  next.quoteAttemptedAt=Object.fromEntries(['US','HK'].map(m=>[m,now.toISOString()]));
-  next.quoteErrors=Object.fromEntries(['US','HK'].map(m=>[m,acceptedMarkets.has(m)?null:'本次行情快照更新失败，保留已有数据']));
+  next.quoteAttemptedAt={...current.quoteAttemptedAt};next.quoteErrors={...current.quoteErrors};
+  for(const m of ['US','HK'])if(!next.quoteAttemptedAt[m]||next.quoteAttemptedAt[m]<=now.toISOString()){
+    next.quoteAttemptedAt[m]=now.toISOString();next.quoteErrors[m]=acceptedMarkets.has(m)?null:'本次行情快照更新失败，保留已有数据';
+  }
   store.setKV(CACHE,next);return next;
 }
 export function marketOverview(store,market,now=new Date()) {
@@ -223,5 +232,5 @@ export function marketOverview(store,market,now=new Date()) {
   const sectors=rows.filter(d=>d.kind==='sector'),volatility=rows.find(d=>d.kind==='volatility')||null;
   const snapshotRow=d=>({key:d.key,name:d.name,...d.latest});
   const latestRecap=marketRecap({market,date:latestDate,indices:benchmarks.map(snapshotRow),sectors:sectors.map(snapshotRow),sectorTotal:sectors.length,volatility:volatility?.latest,sentiment:null});
-  return {market,date,latestDate,benchmarks,sectors,industries:rows.filter(d=>d.kind==='industry'),volatility,context:marketContext(cache.context,market,now),activity:rows.filter(d=>d.kind==='activity').map(activityReading),holdings:portfolios,portfolio:{amount:portfolioAmount,covered:available.length,total:portfolios.length,currency:market==='US'?'USD':'HKD'},summary:labels.length?`${date}：${labels.join('，')}。`:'尚无完整交易日数据，等待更新。',latestHoldings,latestPortfolio,latestRecap,buffett:market==='US'?availableBuffett(cache.buffett,now):null,latestSummary:latestRecap.sections.map(s=>`${s.label}：${s.text}`).join('\n')||'同日行情待更新。',opend:cache.opend||null,sentiment:latestRecap.sentiment,attemptedAt:cache.attemptedAt||null,updatedAt:cache.updatedAt||null,latestCheckedAt:cache.quoteAttemptedAt?.[market]||cache.attemptedAt||null,latestError:cache.quoteErrors?.[market]||null,error:cache.error||null,methods:{change:'指数、行业与持仓展示最新可用快照，涨跌相对前收盘；每日简报保留完整交易日收盘记录。',sectors:'11 只美国行业 ETF 的价格涨跌；不代表全市场涨跌家数，不计分红。',portfolio:'按当前持股数 × 最新价与前收盘价之差估算，不含交易和分红；仅合计页面所示交易日的有效行情，缺失或跨日行情不按零处理。',history:'最近最多 30 个有数据的交易日，不复权收盘价；如有更新报价，图中以虚线附加最新快照，不写入收盘历史。',refresh:'打开市场页时，每分钟同时检查指数、行业 ETF 与已登记持仓的行情快照；历史数据每 30 分钟检查；VIX 官方日收盘与宏观数据每 4 小时检查。数据以来源时间为准，不保证实时。'}};
+  return {market,date,latestDate,benchmarks,sectors,industries:rows.filter(d=>d.kind==='industry'),volatility,context:marketContext(cache.context,market,now),activity:rows.filter(d=>d.kind==='activity').map(activityReading),holdings:portfolios,portfolio:{amount:portfolioAmount,covered:available.length,total:portfolios.length,currency:market==='US'?'USD':'HKD'},summary:labels.length?`${date}：${labels.join('，')}。`:'尚无完整交易日数据，等待更新。',latestHoldings,latestPortfolio,latestRecap,buffett:market==='US'?availableBuffett(cache.buffett,now):null,latestSummary:latestRecap.sections.map(s=>`${s.label}：${s.text}`).join('\n')||'同日行情待更新。',opend:cache.opend||null,sentiment:latestRecap.sentiment,attemptedAt:cache.attemptedAt||null,updatedAt:cache.updatedAt||null,latestCheckedAt:cache.quoteAttemptedAt?.[market]||cache.attemptedAt||null,latestError:cache.quoteErrors?.[market]||null,error:cache.error||null,methods:{change:'指数、行业与持仓展示最新可用快照，涨跌相对前收盘；每日简报保留完整交易日收盘记录。',sectors:'11 只美国行业 ETF 的价格涨跌；不代表全市场涨跌家数，不计分红。',portfolio:'按当前持股数 × 最新价与前收盘价之差估算，不含交易和分红；仅合计页面所示交易日的有效行情，缺失或跨日行情不按零处理。',history:'最近最多 30 个有数据的交易日，不复权收盘价；如有更新报价，图中以虚线附加最新快照，不写入收盘历史。',refresh:'市场页可见时，每 10 秒同时检查指数、行业 ETF 与已登记持仓的行情快照，切回页面立即检查；历史数据每 30 分钟在后台检查；VIX 官方日收盘与宏观数据每 4 小时检查。数据以来源时间为准，不保证实时。'}};
 }

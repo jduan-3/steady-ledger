@@ -9,7 +9,8 @@ The interface is Chinese-first and works on desktop and mobile. Each installatio
 - Track assets, debts, cost basis, portfolio allocation, and unrealized gains or losses.
 - Plan income, expenses, insurance premiums, and cash reserves, with optional monthly salary entries.
 - View fund NAVs and mainland Chinese, Hong Kong, and US stock quotes, intraday charts, daily history, and volume.
-- Keep a fund watchlist with published NAVs and reference charts, including funds you no longer hold.
+- Track pending purchases with target amounts, dates and conditions, and keep completed or cancelled plans for review.
+- Search funds by name or code, keep a watchlist with published NAVs and reference charts, and add watched funds to purchase plans.
 - Follow US and Hong Kong market dashboards, macro indicators, and daily summaries.
 - Chat with a configurable AI provider using Pi Durable, with optional access to saved page data and local bookkeeping tools.
 - Import CSV files, export financial records, and restore earlier ledger versions.
@@ -52,6 +53,10 @@ Local bookkeeping requires a separate opt-in and explicit instructions. The assi
 ## Market data
 
 Stock quotes use Tencent public market data and optional local Futu OpenD access. Fund valuations use published unit NAVs from Eastmoney. Market dashboards also use Cboe daily VIX closes, Tencent Hang Seng volatility quotes, and public US macro sources. Data may be delayed; the app keeps source timestamps, retains cached values on failure, and leaves unavailable values empty.
+
+**买入待办** lists planned purchases in the overview and its own page. Plans can be edited, marked as executed, cancelled or restored; these actions only update the plan. Record actual transactions separately to update holdings and cash. Plans are saved with ledger backups.
+
+In **基金 → 自选 → 添加自选**, search a fund name or six-digit code and select a result, or enter a code directly to look up its name. Search uses [Eastmoney's public fund directory](https://fund.eastmoney.com/) and falls back to saved funds when unavailable; manual code/name entry remains available. Use **更新净值** for the whole watchlist or **更新** on a row. Watchlists and purchase plans do not affect asset totals.
 
 Stock and fund-reference charts show intraday prices, up to 60 unadjusted daily bars, and volume. Prices and turnover amounts retain their source currency. Volume bars use red for rising prices, blue for falling prices, and gray for unchanged prices or a missing comparison price; colors do not identify buying or selling. A reference ETF's market price is separate from the fund's published NAV.
 

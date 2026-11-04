@@ -7,7 +7,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { validateState, calculate, evaluate, demoState, parseCSV, CSV_HEADER, nowDate } from './domain.mjs';
 import { openStore } from './store.mjs';
 import { validateConfig, explain, requireAI, testConnection } from './ai.mjs';
-import { refreshFundNAV, watchedFundAsset } from './funds.mjs';
+import { refreshFundNAV, watchedFundAsset, searchFunds } from './funds.mjs';
 import { dailyValuation } from './valuation.mjs';
 import { searchSecurities, refreshStocks, refreshFX } from './market.mjs';
 import { security } from './securities.mjs';
@@ -137,13 +137,15 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         }
         if (path === '/api/markets/refresh' && req.method === 'POST') {
           const input=await body(req);if(!['US','HK'].includes(input.market))throw new Error('请选择美国或港股市场');
-          await updateMarkets({force:input.force===true,live:true,market:input.market});if(!input.poll)void generateBriefs().catch(()=>{});return json(res,marketView(input.market));
+          if(!input.poll)void updateMarkets({force:input.force===true}).then(()=>generateBriefs()).catch(()=>{});
+          await refreshMarketOverview(store,{live:true,market:input.market});return json(res,marketView(input.market));
         }
         if (path === '/api/profile/avatar' && req.method === 'GET') {
           if(!avatarUrl())return json(res,{error:'尚未设置头像'},404);
           const photo=await readFile(avatarPath);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'private, no-cache'});return res.end(photo);
         }
         if (path === '/api/market/refresh' && req.method === 'POST') { await body(req); const result = await updateNAV({ retryFailed: true, force: true }); return json(res, { result, ...view() }); }
+        if(path==='/api/market/funds/search'&&req.method==='GET')return json(res,await searchFunds(store,url.searchParams.get('q')));
         if(path==='/api/market/fund-watchlist/refresh'&&req.method==='POST'){
           const input=await body(req),watchlist=store.state({raw:true}).fundWatchlist||[];
           if(input.code!=null&&!watchlist.some(f=>f.code===input.code))return json(res,{error:'自选基金不存在'},404);

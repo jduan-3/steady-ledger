@@ -26,7 +26,7 @@ export function buildAssistantData(store, state = store.state()) {
   const references=state.assets.filter(a=>a.type==='fund').map(a=>fundReference(store,a.id));
   const stockMarkets=state.assets.filter(a=>a.type==='stock').map(a=>stockMarketData(store,a.id));
   return structuredClone({capturedAt:new Date().toISOString(),revision:state.revision,isDemo:state.isDemo,pages:{
-    dashboard:{metrics,rules:evaluate(state,metrics),history,valuation:dailyValuation(state,metrics,history)},
+    dashboard:{metrics,rules:evaluate(state,metrics),history,valuation:dailyValuation(state,metrics,history),buyPlans:state.buyPlans||[]},
     assets:{assets:state.assets,debts:state.debts,allocations,ledgerEntries:store.ledgerEntries()},
     cashflow:{profile:state.profile,upcoming:state.upcoming,incomeSchedule:store.incomeStatus()},
     'us-market':marketOverview(store,'US'), 'us-monthly':monthlyPerformance(store), 'us-quotes':watchboard(store), 'hk-market':marketOverview(store,'HK'),

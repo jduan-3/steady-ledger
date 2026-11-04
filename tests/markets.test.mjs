@@ -52,7 +52,7 @@ test('intraday bars never masquerade as yesterday; weekends and exchange half-da
  await refreshMarketOverview(s,{provider:async()=>({global:{qot_logined:true},calendars:{US:[{time:'2026-11-27',trade_date_type:'HALF'}]},quotes:[quote('US..SPX',130,120,'2026-11-27 13:01:00')],history:[]}),fetchImpl:async()=>{throw new Error();},now:half});assert.equal(marketOverview(s,'US',half).date,'2026-11-27');
 });
 
-test('市场页按分钟读取轻量行情快照，历史、收盘日期和情绪缓存保持原样，失败保留快照',async t=>{
+test('市场页按十秒读取轻量行情快照，历史、收盘日期和情绪缓存保持原样，失败保留快照',async t=>{
  const s=setup(t),start=new Date('2026-10-26T02:00:00Z');
  const previous=normalizeMarketQuote(quote('HK.800000',110,100,'2026-10-26 09:59:00'),MARKET_SERIES[4],start);
  const history=[normalizeMarketQuote({key:'HK.800000',date:'2026-10-23',price:100,previous:{price:99}},MARKET_SERIES[4],start)];
@@ -62,12 +62,36 @@ test('市场页按分钟读取轻量行情快照，历史、收盘日期和情�
  await refreshMarketOverview(s,options);let view=marketOverview(s,'HK',options.now);
  assert.equal(view.latestDate,'2026-10-26');assert.equal(view.benchmarks[0].latest.price,112);assert.equal(view.date,'2026-10-23');assert.equal(view.benchmarks[0].quote.price,100);assert.equal(view.latestError,null);
  const cache=s.getKV('markets_snapshot');assert.deepEqual(cache.histories['HK.800000'],history);assert.equal(cache.sentiment.score,42);assert.equal(cache.updatedAt,start.toISOString());assert.equal(urls.length,1);assert.match(urls[0],/qt\.gtimg\.cn/);
- await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:30Z')});assert.equal(calls,1);
+ await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:09.999Z')});assert.equal(calls,1);
+ await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:10Z')});assert.equal(calls,2);
  await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:04:01Z'),provider:async()=>{throw new Error();}});
  view=marketOverview(s,'HK',new Date('2026-10-26T02:04:01Z'));assert.equal(view.benchmarks[0].latest.price,112);assert.match(view.latestError,/保留已有数据/);
  const html=marketPageHTML('HK',view);assert.match(html,/Futu OpenD · 2026-10-26 10:03:00/);assert.match(html,/最新快照/);assert.match(html,/指数走势/);
+ assert.match(html,/每 10 秒同步检查/);
  await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:05:02Z'),provider:async()=>{throw new Error();},fetchImpl:async()=>new Response(wire('hkHSI','HSI',113,100,'2026-10-26 10:05:00'))});
  view=marketOverview(s,'HK',new Date('2026-10-26T02:05:02Z'));assert.equal(view.benchmarks[0].latest.price,113);assert.equal(view.benchmarks[0].latest.source,'腾讯证券公开行情');assert.equal(view.latestError,null);
+});
+
+test('历史和宏观更新未完成时两市场快照仍独立刷新，并发去重且不会被后台旧报价覆盖',async t=>{
+ const s=setup(t),start=new Date('2026-10-26T02:00:00Z'),liveTime=new Date('2026-10-26T02:00:10Z');
+ let release;const gate=new Promise(resolve=>{release=resolve;});
+ const full=refreshMarketOverview(s,{now:start,provider:async()=>{await gate;return {quotes:[quote('HK.800000',110,100,'2026-10-26 10:00:00')]};},fetchImpl:dataFetch()});
+ let calls=0,done=0;
+ const options={live:true,now:liveTime,fetchImpl:async url=>{assert.match(url,/qt\.gtimg\.cn/);throw new Error('Offline');},provider:async input=>{
+  calls++;assert.equal(input.action,'overview-live');
+  return {quotes:input.keys.includes('HK.800000')?[quote('HK.800000',112,100,'2026-10-26 10:00:10')]:[quote('US..SPX',120,100,'2026-10-23 16:02:00')]};
+ }};
+ const hk=refreshMarketOverview(s,{...options,market:'HK'}),us=refreshMarketOverview(s,{...options,market:'US'});
+ assert.equal(refreshMarketOverview(s,{...options,market:'HK'}),hk);
+ void hk.then(()=>{done++;});void us.then(()=>{done++;});
+ await new Promise(resolve=>setImmediate(resolve));const finishedBeforeFull=done;
+ release();await Promise.all([full,hk,us]);
+ assert.equal(finishedBeforeFull,2);assert.equal(calls,2);
+ const cache=s.getKV('markets_snapshot');
+ assert.equal(cache.quotes['HK.800000'].price,112);assert.equal(cache.quotes['US..SPX'].price,120);
+ assert.equal(cache.quoteAttemptedAt.HK,liveTime.toISOString());assert.equal(cache.quoteAttemptedAt.US,liveTime.toISOString());
+ assert.equal(cache.quoteErrors.HK,null);assert.equal(cache.quoteErrors.US,null);
+ assert.equal(cache.histories['US..SPX'].at(-1).date,'2026-10-23');
 });
 
 test('港股的指数、持仓涨跌、金额和图表同步更新，跨日缺失不混入合计，简报仍使用收盘记录',async t=>{
