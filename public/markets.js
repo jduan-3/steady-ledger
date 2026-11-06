@@ -81,7 +81,7 @@ export function marketPageHTML(market,view,{loading=false,error='',seriesKey='',
   const vix=view.volatility?.latest||view.volatility?.quote,volatility=Number.isFinite(vix?.price)&&vix.price>0&&((vix.date===date||vix.date===view.date)||(us&&vix.source?.startsWith('Cboe')&&vix.date<date&&Date.parse(date)-Date.parse(vix.date)<=7*86400000))?vix:null;
   const marketContext=us?buffettHTML(view.buffett):'';
   return head+`
-    <div class="market-data-context"><span>指数与行情每 10 秒同步检查 · 时间以来源为准</span>${checked?`<span>最近检查 ${esc(checked)}</span>`:''}</div>
+    <div class="market-data-context"><span>指数与行情每 ${us?10:5} 秒同步检查 · 时间以来源为准</span>${checked?`<span>最近检查 ${esc(checked)}</span>`:''}</div>
     ${view.latestError||view.error?`<p class="market-notice" role="status">${esc(view.latestError||view.error)}</p>`:''}
     <div class="market-indices">${indexCards}</div>${summary}
     <div class="market-layout${!marketContext?' market-layout-single':''}">

@@ -31,3 +31,18 @@ test('成交量比仅用最近完整收盘与此前20天，不混入盘中，不
   history[5].volume=100;history.at(-1).volume=0;assert.equal(activityReading(series).relativeVolume,0);
   series.history=history.slice(1);assert.equal(activityReading(series).relativeVolume,null);
 });
+test('手动更新可重试失败或已缓存的宏观来源，仍限制一分钟内的重复请求',async()=>{
+  const keys=['DGS2','DGS10','T10Y2Y','BAMLH0A0HYM2','OFR'];
+  const cached=Object.fromEntries(keys.map((key,i)=>[key,{history:[{date:'2026-10-26',value:4}],attemptedAt:new Date(now.getTime()-10*60000).toISOString(),updatedAt:new Date(now.getTime()-3600000).toISOString(),error:i%2?'本次未取得新数据':null}]));
+  let calls=0;
+  const fetchImpl=async url=>{calls++;const key=new URL(url).searchParams.get('id');return new Response(key?`observation_date,${key}\n2026-10-27,4.2`:'Date,OFR FSI\n2026-10-26,-.5');};
+  await refreshMarketContext(cached,{fetchImpl,now});assert.equal(calls,0);
+  const restored=await refreshMarketContext(cached,{fetchImpl,now,force:true});assert.equal(calls,5);
+  for(const key of keys){assert.equal(restored[key].error,null);assert.equal(restored[key].updatedAt,now.toISOString());}
+  assert.equal(marketContext(restored,'US',now)[0].status,'available');
+  assert.equal(marketContext(restored,'US',now)[0].date,'2026-10-27');
+  await refreshMarketContext(restored,{fetchImpl,now:new Date(now.getTime()+59999),force:true});assert.equal(calls,5);
+  await refreshMarketContext(restored,{fetchImpl,now:new Date(now.getTime()+60000),force:true});assert.equal(calls,10);
+  const failed=await refreshMarketContext(restored,{fetchImpl:async()=>{throw new Error('Connection reset');},now:new Date(now.getTime()+60000),force:true});
+  for(const key of keys){assert.deepEqual(failed[key].history,restored[key].history);assert.equal(failed[key].updatedAt,restored[key].updatedAt);assert.ok(failed[key].error);}
+});

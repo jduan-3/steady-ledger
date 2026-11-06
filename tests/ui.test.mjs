@@ -12,13 +12,14 @@ import { monthlyPageHTML } from '../public/monthly-performance.js';
 import { watchboardPageHTML, watchboardGroupsHTML, watchboardQuoteHTML, watchboardCopyText } from '../public/watchboard.js';
 import { fundReferenceHTML, updateReferenceChartCursor } from '../public/fund-reference.js';
 import { stockMarketHTML } from '../public/stock-market.js';
+import { cnMarketPageHTML, etfFlowsPageHTML } from '../public/cn-market.js';
 
 // Pure rendering/event tests over local source; no browser or running page access.
 function componentHarness(fetch) {
   const nodes=new Map(),listeners={};
   const node=()=>({innerHTML:'',textContent:'',classList:{add(){},remove(){}},addEventListener(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});
   class Form {constructor(id,fields){this.actualId=id;this.id={name:'id'};this.fields=fields;} getAttribute(){return this.actualId;} querySelectorAll(){return [];} }
-  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,updateReferenceChartCursor,stockMarketHTML,setTimeout:()=>0,clearTimeout(){}});
+  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,updateReferenceChartCursor,stockMarketHTML,cnMarketPageHTML,etfFlowsPageHTML,setTimeout:()=>0,clearTimeout(){}});
   vm.runInContext(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/\nstart\(\);\s*$/,''),context);
   const state=validateState(initialState());
   context.fixture={state,metrics:calculate(state),rules:evaluate(state),history:[],reports:[],messages:[],audit:[],config:{baseUrl:'',model:'',consent:false}};
@@ -341,7 +342,7 @@ test('行情请求失败后保留缓存，显示持续错误和重试入口',asy
  const html=h.run("marketPage('US')");assert.match(html,/保留上次数据/);assert.match(html,/重试/);assert.match(html,/role="alert"/);
 });
 
-test('市场页每十秒检查，隐藏或编辑时暂停，切回页面立即检查，其他页面保持一分钟',async()=>{
+test('港股每五秒检查，美股每十秒，隐藏或编辑时暂停，切回立即检查，其他页面保持一分钟',async()=>{
  const requests=[],timers=[];
  const market={market:'HK',benchmarks:[],sectors:[],portfolio:{amount:null,total:0,covered:0}};
  const h=componentHarness(async(url,options)=>{
@@ -351,7 +352,7 @@ test('市场页每十秒检查，隐藏或编辑时暂停，切回页面立即�
  });
  h.context.setInterval=(callback,delay)=>{timers.push({callback,delay});return 0;};
  await h.run('start()');
- assert.deepEqual(timers.map(timer=>timer.delay),[10000,60000]);
+ assert.deepEqual(timers.map(timer=>timer.delay),[5000,10000,60000]);
  h.context.market=market;h.run("route='hk-market';location.hash='#hk-market';marketViews.HK=market;");
  await timers[0].callback();assert.equal(requests.length,1);assert.equal(requests[0].market,'HK');assert.equal(requests[0].poll,true);
  h.context.document.visibilityState='hidden';await timers[0].callback();assert.equal(requests.length,1);
@@ -359,8 +360,10 @@ test('市场页每十秒检查，隐藏或编辑时暂停，切回页面立即�
  h.nodes.get('#dialog').open=false;h.context.document.activeElement={matches:()=>true};await timers[0].callback();assert.equal(requests.length,1);
  h.context.document.activeElement=null;h.run('chatBusy=true');await timers[0].callback();assert.equal(requests.length,1);
  h.run('chatBusy=false');h.listeners.visibilitychange();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,2);
- await timers[1].callback();assert.equal(requests.length,2);
- h.run("route='dashboard';location.hash='#dashboard'");await timers[0].callback();assert.equal(requests.length,2);
+ await timers[1].callback();await timers[2].callback();assert.equal(requests.length,2);
+ h.run("route='us-market';location.hash='#us-market';marketViews.US=market;");await timers[0].callback();assert.equal(requests.length,2);
+ await timers[1].callback();assert.equal(requests.length,3);assert.equal(requests[2].market,'US');assert.equal(requests[2].poll,true);
+ h.run("route='dashboard';location.hash='#dashboard'");await timers[0].callback();await timers[1].callback();assert.equal(requests.length,3);
 });
 
 test('每只股票占比按全部直接股票的人民币估值计算，包含池外股票，排除基金和现金',()=>{
@@ -683,4 +686,21 @@ test('US watch cards share the collapsed market navigation and retain search whe
   assert.equal(requests,1);assert.equal(h.run('watchboardMode'),'close');assert.equal(h.run('watchboardQuery'),'苹果');assert.match(h.nodes.get('#app').innerHTML,/−1.0%/);
   await h.listeners.click({target:{closest:()=>({dataset:{action:'watchboard-quote',key:'US.AAPL'}})}});
   assert.match(h.nodes.get('#dialog').innerHTML,/最近收盘/);assert.match(h.nodes.get('#dialog').innerHTML,/Synthetic/);
+});
+
+
+test('沪深市场包含ETF子页并保留其他市场导航，更新操作使用专用市场接口',async()=>{
+  let refreshes=0;
+  const view={benchmarks:[],items:[],summary:{},errors:{}};
+  const h=componentHarness(async url=>{assert.ok(['/api/markets/cn','/api/markets/cn/refresh'].includes(url));if(url.endsWith('/refresh'))refreshes++;return Response.json(view);});
+  h.context.cnFixture=view;
+  h.run("location.hash='#cn-market';cnMarketAttempted=true;cnMarketView=cnFixture;render();");
+  let html=h.nodes.get('#app').innerHTML;
+  assert.match(html,/沪深市场/);assert.match(html,/我的沪深持仓/);assert.match(html,/美国市场/);assert.match(html,/港股市场/);
+  await h.listeners.click({preventDefault(){},target:{closest:()=>({dataset:{action:'toggle-cn-market'}})}});
+  assert.match(h.nodes.get('#app').innerHTML,/aria-controls="cn-market-pages" aria-expanded="true"/);
+  h.run("location.hash='#cn-etf';render();");html=h.nodes.get('#app').innerHTML;
+  assert.equal(h.run('route'),'cn-etf');assert.match(html,/每日份额与净申赎/);assert.match(html,/不能据此确认汇金/);
+  await h.listeners.click({target:{closest:()=>({dataset:{action:'refresh-cn-market'}})}});
+  assert.equal(refreshes,1);assert.equal(h.run('cnMarketBusy'),false);
 });

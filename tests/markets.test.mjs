@@ -44,6 +44,19 @@ test('refresh caches public fallback and OpenD status without contacting retired
  await refreshMarketOverview(s,{provider:async()=>{throw new Error();},fetchImpl:async()=>{throw new Error();},now:new Date('2026-10-25T10:00:00Z')});
  assert.deepEqual(s.getKV('markets_snapshot').quotes,previous);assert.match(marketOverview(s,'US',now).error,/保留/);
 });
+test('市场页手动更新将强制重试传给宏观来源，成功后清除失败提示并保留披露日',async t=>{
+ const s=setup(t),attemptedAt=new Date(now.getTime()-10*60000).toISOString();
+ const entry={history:[{date:'2026-10-23',value:4.2}],attemptedAt,updatedAt:attemptedAt,error:'本次未取得新数据'};
+ s.setKV('markets_snapshot',{attemptedAt,context:{DGS2:entry}});
+ let calls=0;
+ await refreshMarketOverview(s,{now,force:true,provider:async()=>({quotes:[]}),fetchImpl:async url=>{
+  if(new URL(url).searchParams.get('id')==='DGS2'){calls++;return new Response('observation_date,DGS2\n2026-10-23,4.2');}
+  throw new Error('Other sources unavailable');
+ }});
+ const row=marketOverview(s,'US',now).context.find(r=>r.key==='DGS2');
+ assert.equal(calls,1);assert.equal(row.status,'available');assert.equal(row.error,null);assert.equal(row.date,'2026-10-23');assert.equal(row.value,4.2);
+ assert.ok(!marketPageHTML('US',marketOverview(s,'US',now)).includes('更新失败，保留记录'));
+});
 test('intraday bars never masquerade as yesterday; weekends and exchange half-days use the last completed session',async t=>{
  const s=setup(t),monday=new Date('2026-10-26T17:00:00Z');
  const provider=async()=>({global:{qot_logined:true},calendars:{US:[{time:'2026-10-26',trade_date_type:'WHOLE'}]},quotes:[quote('US..SPX',120,110,'2026-10-26 13:00:00')],history:[{key:'US..SPX',date:'2026-10-23',price:110,previous:{price:100}},{key:'US..SPX',date:'2026-10-26',price:120,previous:{price:110}}]});
@@ -52,7 +65,7 @@ test('intraday bars never masquerade as yesterday; weekends and exchange half-da
  await refreshMarketOverview(s,{provider:async()=>({global:{qot_logined:true},calendars:{US:[{time:'2026-11-27',trade_date_type:'HALF'}]},quotes:[quote('US..SPX',130,120,'2026-11-27 13:01:00')],history:[]}),fetchImpl:async()=>{throw new Error();},now:half});assert.equal(marketOverview(s,'US',half).date,'2026-11-27');
 });
 
-test('市场页按十秒读取轻量行情快照，历史、收盘日期和情绪缓存保持原样，失败保留快照',async t=>{
+test('港股按五秒读取轻量行情快照，美股保持十秒，历史与收盘记录保持原样，失败保留快照',async t=>{
  const s=setup(t),start=new Date('2026-10-26T02:00:00Z');
  const previous=normalizeMarketQuote(quote('HK.800000',110,100,'2026-10-26 09:59:00'),MARKET_SERIES[4],start);
  const history=[normalizeMarketQuote({key:'HK.800000',date:'2026-10-23',price:100,previous:{price:99}},MARKET_SERIES[4],start)];
@@ -62,14 +75,20 @@ test('市场页按十秒读取轻量行情快照，历史、收盘日期和情�
  await refreshMarketOverview(s,options);let view=marketOverview(s,'HK',options.now);
  assert.equal(view.latestDate,'2026-10-26');assert.equal(view.benchmarks[0].latest.price,112);assert.equal(view.date,'2026-10-23');assert.equal(view.benchmarks[0].quote.price,100);assert.equal(view.latestError,null);
  const cache=s.getKV('markets_snapshot');assert.deepEqual(cache.histories['HK.800000'],history);assert.equal(cache.sentiment.score,42);assert.equal(cache.updatedAt,start.toISOString());assert.equal(urls.length,1);assert.match(urls[0],/qt\.gtimg\.cn/);
- await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:09.999Z')});assert.equal(calls,1);
- await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:10Z')});assert.equal(calls,2);
+ await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:04.999Z')});assert.equal(calls,1);
+ await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:03:05Z')});assert.equal(calls,2);
  await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:04:01Z'),provider:async()=>{throw new Error();}});
  view=marketOverview(s,'HK',new Date('2026-10-26T02:04:01Z'));assert.equal(view.benchmarks[0].latest.price,112);assert.match(view.latestError,/保留已有数据/);
  const html=marketPageHTML('HK',view);assert.match(html,/Futu OpenD · 2026-10-26 10:03:00/);assert.match(html,/最新快照/);assert.match(html,/指数走势/);
- assert.match(html,/每 10 秒同步检查/);
+ assert.match(html,/每 5 秒同步检查/);assert.match(view.methods.refresh,/每 5 秒/);
  await refreshMarketOverview(s,{...options,now:new Date('2026-10-26T02:05:02Z'),provider:async()=>{throw new Error();},fetchImpl:async()=>new Response(wire('hkHSI','HSI',113,100,'2026-10-26 10:05:00'))});
  view=marketOverview(s,'HK',new Date('2026-10-26T02:05:02Z'));assert.equal(view.benchmarks[0].latest.price,113);assert.equal(view.benchmarks[0].latest.source,'腾讯证券公开行情');assert.equal(view.latestError,null);
+ let usCalls=0;
+ const usOptions={...options,market:'US',provider:async()=>{usCalls++;return {quotes:[]};}};
+ await refreshMarketOverview(s,usOptions);
+ await refreshMarketOverview(s,{...usOptions,now:new Date('2026-10-26T02:03:09.999Z')});assert.equal(usCalls,1);
+ await refreshMarketOverview(s,{...usOptions,now:new Date('2026-10-26T02:03:10Z')});assert.equal(usCalls,2);
+ const usView=marketOverview(s,'US',usOptions.now);assert.match(marketPageHTML('US',usView),/每 10 秒同步检查/);assert.match(usView.methods.refresh,/每 10 秒/);
 });
 
 test('历史和宏观更新未完成时两市场快照仍独立刷新，并发去重且不会被后台旧报价覆盖',async t=>{

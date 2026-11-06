@@ -14,6 +14,7 @@ import { security } from './securities.mjs';
 import { refreshMarketOverview, marketOverview } from './markets.mjs';
 import { monthlyPerformance, refreshMonthlyPerformance } from './monthly-performance.mjs';
 import { watchboard, refreshWatchboard } from './watchboard.mjs';
+import { cnMarketOverview, refreshCNMarket } from './cn-market.mjs';
 import { createMarketBriefGenerator, readMarketBriefs, saveMarketBriefs } from './market-briefs.mjs';
 import { createAssistantServices } from './market-access.mjs';
 import { stockDetails } from './instrument-details.mjs';
@@ -123,6 +124,8 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
       if (path.startsWith('/api/')) {
         if (!authenticated(req)) return json(res, { error: '请先登录' }, 401);
         if (path === '/api/bootstrap' && req.method === 'GET') return json(res, view());
+        if (path === '/api/markets/cn' && req.method === 'GET') return json(res,cnMarketOverview(store));
+        if (path === '/api/markets/cn/refresh' && req.method === 'POST') { await body(req);return json(res,await refreshCNMarket(store)); }
         if(path==='/api/ledger/entries'&&req.method==='DELETE'){const {id}=await body(req);store.cancelLedgerEntry(id);return json(res,view());}
         if (path === '/api/markets/watchboard' && req.method === 'GET') return json(res,watchboard(store,{mode:url.searchParams.get('mode')||'latest'}));
         if (path === '/api/markets/watchboard/refresh' && req.method === 'POST') { const input=await body(req);return json(res,await refreshWatchboard(store,{mode:input.mode||'latest'})); }
@@ -236,7 +239,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         return json(res, { error: '接口不存在' }, 404);
       }
       if (!['GET','HEAD'].includes(req.method)) return json(res, { error: '方法不支持' }, 405);
-      const files = { '/': ['index.html','text/html'], '/index.html': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/markets.js': ['markets.js','text/javascript'], '/monthly-performance.js': ['monthly-performance.js','text/javascript'], '/watchboard.js': ['watchboard.js','text/javascript'], '/fund-reference.js': ['fund-reference.js','text/javascript'], '/stock-market.js': ['stock-market.js','text/javascript'], '/watchboard-logos.js': ['watchboard-logos.js','text/javascript'], '/logos/LICENSE.txt': ['logos/LICENSE.txt','text/plain'], '/sse.js': ['sse.js','text/javascript'], '/styles.css': ['styles.css','text/css'], '/favicon.svg': ['favicon.svg','image/svg+xml'] };
+      const files = { '/': ['index.html','text/html'], '/index.html': ['index.html','text/html'], '/app.js': ['app.js','text/javascript'], '/markets.js': ['markets.js','text/javascript'], '/cn-market.js': ['cn-market.js','text/javascript'], '/monthly-performance.js': ['monthly-performance.js','text/javascript'], '/watchboard.js': ['watchboard.js','text/javascript'], '/fund-reference.js': ['fund-reference.js','text/javascript'], '/stock-market.js': ['stock-market.js','text/javascript'], '/watchboard-logos.js': ['watchboard-logos.js','text/javascript'], '/logos/LICENSE.txt': ['logos/LICENSE.txt','text/plain'], '/sse.js': ['sse.js','text/javascript'], '/styles.css': ['styles.css','text/css'], '/favicon.svg': ['favicon.svg','image/svg+xml'] };
       const file = files[path] || (/^\/logos\/[a-z0-9-]+\.svg$/.test(path)&&existsSync(join(root,'public',path.slice(1)))?[path.slice(1),'image/svg+xml']:null); if (!file) return json(res, { error: '页面不存在' }, 404);
       const data = await readFile(join(root,'public',file[0])); res.writeHead(200, { 'Content-Type': file[1] + '; charset=utf-8', 'Cache-Control': 'no-cache' }); res.end(req.method === 'HEAD' ? undefined : data);
     } catch (error) { if (!res.headersSent) json(res, { error: error.status && error.status >= 500 ? '服务暂不可用' : error.message || '请求失败' }, error.status || 400); else res.end(); }

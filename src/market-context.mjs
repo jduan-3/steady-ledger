@@ -20,11 +20,11 @@ export function parseContextCSV(text,column,now=new Date(),dateColumn='observati
   if(fields[0]!==dateColumn||index<1)throw new Error('宏观数据格式无效');
   return observations(lines.map(line=>{const cells=line.split(',');return {date:cells[0],value:cells[index]};}),'US',now);
 }
-export async function refreshMarketContext(cached={}, {fetchImpl=fetch,now=new Date()}={}) {
+export async function refreshMarketContext(cached={}, {fetchImpl=fetch,now=new Date(),force=false}={}) {
   const next={...cached};
   const groups=['DGS2','DGS10','T10Y2Y','BAMLH0A0HYM2','OFR'].map(key=>({keys:[key],url:key==='OFR'?'https://www.financialresearch.gov/financial-stress-index/data/fsi.csv':`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${key}&cosd=${new Date(now.getTime()-120*86400000).toISOString().slice(0,10)}`}));
   await Promise.all(groups.map(async group=>{
-    const due=group.keys.some(key=>{const prev=cached[key],age=now-Date.parse(prev?.attemptedAt);return !Number.isFinite(age)||age<0||age>=(prev?.error?30*60000:4*3600000);});
+    const due=group.keys.some(key=>{const prev=cached[key],age=now-Date.parse(prev?.attemptedAt);return !Number.isFinite(age)||age<0||age>=(force?60000:prev?.error?30*60000:4*3600000);});
     if(!due)return;
     let rows={};
     for(let attempt=0;attempt<2;attempt++)try{

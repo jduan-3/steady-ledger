@@ -11,7 +11,8 @@ The interface is Chinese-first and works on desktop and mobile. Each installatio
 - View fund NAVs and mainland Chinese, Hong Kong, and US stock quotes, intraday charts, daily history, and volume.
 - Track pending purchases with target amounts, dates and conditions, and keep completed or cancelled plans for review.
 - Search funds by name or code, keep a watchlist with published NAVs and reference charts, and add watched funds to purchase plans.
-- Follow US and Hong Kong market dashboards, macro indicators, and daily summaries.
+- Follow mainland Chinese, US and Hong Kong market dashboards, macro indicators, and daily summaries.
+- Monitor six mainland broad-market ETFs with intraday order-flow estimates and exchange-published daily share changes, with source dates and failure caching.
 - Chat with a configurable AI provider using Pi Durable, with optional access to saved page data and local bookkeeping tools.
 - Import CSV files, export financial records, and restore earlier ledger versions.
 
@@ -49,6 +50,8 @@ In **Settings → AI connection**, enter a Chat Completions-compatible base URL,
 Choose which financial data and conversation history the model may receive. Full-page access includes saved holdings, account names, notes, costs, and other business data; hiding amounts in the UI does not reduce that permission. API keys stay on the server, encrypted at rest.
 
 Local bookkeeping requires a separate opt-in and explicit instructions. The assistant can ask for missing details and continue from your reply. Fund transactions awaiting the requested day's published NAV remain pending until that value is available. These tools update the local ledger; they do not place brokerage orders.
+
+With local bookkeeping enabled, the assistant can also delete a specified stock or fund holding record, or remove a fund from the watchlist. Holdings and watchlist entries are separate; unclear targets or scopes are clarified in chat. Deletion preserves cash and trade history, blocks holdings with pending entries, and can be restored from recent changes in Settings.
 
 ## Market data
 
@@ -92,6 +95,7 @@ Source code lives in `src/`, browser assets in `public/`, and tests in `tests/`.
 ## Documentation
 
 - [Market data sources and freshness](docs/market-data-sources.md)
+- [Mainland market and ETF flow data](docs/cn-market-data.md)
 - [Stock market data](docs/stock-market-data.md)
 - [Fund reference mappings and data](docs/fund-reference-data.md)
 - [Market summary format](docs/market-summary-format.md)

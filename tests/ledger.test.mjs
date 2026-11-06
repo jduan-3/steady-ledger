@@ -420,6 +420,42 @@ test('校准缺信息时逐项追问，补答总份额和现金不动后直接�
   const result=await bind('现金不动','balance-cash',{history}).setHoldingBalance({...args,quantity:200,cashDelta:0,evidence:'现金不动'});
   assert.equal(result.status,'applied');assert.equal(store.state().assets[1].quantity,200);assert.equal(store.state().assets[1].costBasis,null);assert.equal(store.state().assets[0].value,10000);
 });
+test('科创50校准承接原样补答“不变”，也能从旧版重复询问标的中恢复',async t=>{
+  for(const legacy of [false,true]){
+    const {store,bind}=setup(t),original='科创50 的数据更新一下， 持仓收益率是 -百分之16.03 亏损时 4283.93';
+    const history=[
+      {role:'user',content:original},{role:'assistant',content:'更新后的总份额／总股数是多少？'},
+      {role:'user',content:'24775.11 份'},{role:'assistant',content:'更新后的单位成本是多少？未知时可以先留空。'},
+      {role:'user',content:'单位成本 1.0790'},{role:'assistant',content:'现金保持不变，还是另有明确的现金调整金额？'}
+    ];
+    if(legacy)history.push(
+      {role:'user',content:'不变'},{role:'assistant',content:'你要按最新总份额校准哪一项持仓？'},
+      {role:'user',content:'科创50'},{role:'assistant',content:'你要按最新总份额校准哪一项持仓？'},
+      {role:'user',content:'啥意思'},{role:'assistant',content:'你要按最新总份额校准哪一项持仓？'}
+    );
+    const question=legacy?'科创50':'不变';
+    const result=await bind(question,'balance-short-answer',{history}).setHoldingBalance({query:'科创50',quantity:24775.11,averageCost:1.079,cashDelta:0,evidence:question});
+    assert.equal(result.status,'applied',JSON.stringify({legacy,result}));assert.equal(result.after.quantity,24775.11);assert.equal(result.after.cost,26732.34);
+    assert.equal(store.state().assets[0].value,10000);assert.equal(store.ledgerEntries().length,1);
+  }
+});
+test('简短现金补答必须紧接现金追问，不能从无关、已完成或被取消的对话沿用',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),original='更新科创持仓为200份，单位成本1.5元';
+  const args={query:'科创',quantity:200,averageCost:1.5,cashDelta:0,evidence:'不变'};
+  for(const answer of [
+    {role:'assistant',content:'更新后的单位成本是多少？'},
+    {role:'assistant',content:'现金保持不变吗？',metadata:{toolCalls:[{name:'set_holding_balance',output:{status:'applied'}}]}},
+    {role:'assistant',content:'最近市场怎么样？'}
+  ]){
+    const result=await bind('不变','balance-unrelated',{history:[{role:'user',content:original},answer]}).setHoldingBalance(args);
+    assert.equal(result.status,'needs_information');
+  }
+  const history=[{role:'user',content:original},{role:'assistant',content:'现金保持不变吗？'}];
+  const confused=await bind('啥意思','balance-confused',{history}).setHoldingBalance({...args,evidence:'啥意思'});
+  assert.equal(confused.status,'needs_information');
+  const result=await bind('不变，不要更新','balance-cancelled',{history}).setHoldingBalance({...args,evidence:'不变，不要更新'});
+  assert.notEqual(result.status,'applied');assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
 test('校准不能用推算增量、助手数字、被否定的指令或无关历史写账',async t=>{
   const {store,bind}=setup(t),before=store.state({raw:true}),history=balanceHistory(),args={query:'科创',quantity:23671.48,averageCost:1.1141,cashDelta:-1000,evidence:'现金-1000'};
   for(const extra of [{quantity:3218.48},{averageCost:1},{cashDelta:-3556}]){
@@ -454,4 +490,67 @@ test('校准持仓和现金原子提交，现金不足或凭据失败不改任�
   const short='将科创持仓更新为200份，现金减10001元';
   const result=await bind(short,'balance-no-cash').setHoldingBalance({query:'科创',quantity:200,cashDelta:-10001,evidence:short});
   assert.equal(result.status,'needs_information');assert.match(result.question,/现金|余额/);assert.deepEqual(store.state({raw:true}),before);
+});
+
+test('字段前置的份额与单位成本补答保留原校准，其他都不变保留现金，旧版反复问标的可恢复',async t=>{
+  for(const legacy of [false,true]){
+    const {store,bind}=setup(t),original='科创50 我需要更新一下持仓， 持仓收益率是 -百分之16.03 其他都不变';
+    const history=[{role:'user',content:original},{role:'assistant',content:'显示的成本金额（或持仓金额）是多少？有这一个数我就能直接把账本校准到位。'}];
+    const details='成本是 1.0790 份额是 24775.11    持仓收益率是 -百分之16.03';
+    const args={query:'科创50',quantity:24775.11,averageCost:1.079,cashDelta:0,evidence:details};
+    const first=await bind(details,'prefixed-details',{history}).setHoldingBalance(args);
+    assert.equal(first.status,'needs_information');assert.match(first.question,/单位成本/);assert.equal(first.corrections,undefined);
+    history.push({role:'user',content:details},{role:'assistant',content:first.question});
+    if(legacy)history.push({role:'user',content:'成本是 1.0790'},{role:'assistant',content:'你要按最新总份额校准哪一项持仓？'},{role:'user',content:'科创啊'},{role:'assistant',content:'你要按最新总份额校准哪一项持仓？'});
+    const question=legacy?'科创 50':'成本是 1.0790';
+    const result=await bind(question,'prefixed-complete',{history}).setHoldingBalance({...args,evidence:question});
+    assert.equal(result.status,'applied',JSON.stringify(result));assert.equal(result.after.quantity,24775.11);assert.equal(result.after.cost,26732.34);assert.equal(store.state().assets[0].value,10000);
+  }
+});
+test('成本数字不能误读成紧随其后的份额标签，普通成本不能凭大小推断单位成本',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true});
+  for(const cost of ['成本是1.0790','总成本是26732.34']){
+    const question='更新科创持仓，'+cost+' 份额是24775.11，其他都不变';
+    const result=await bind(question).setHoldingBalance({query:'科创',quantity:24775.11,averageCost:1.079,evidence:question});
+    assert.equal(result.status,'needs_information');assert.match(result.question,/单位成本/);assert.equal(result.corrections,undefined);
+  }
+  assert.deepEqual(store.state({raw:true}),before);
+  const question='更新科创持仓，单位成本是1.0790，份额是24775.11，其他都不变';
+  const result=await bind(question).setHoldingBalance({query:'科创',quantity:1.079,evidence:question});
+  assert.deepEqual(result.corrections,{quantity:24775.11});
+});
+
+test('对话删除持仓和自选独立、可恢复、幂等，现金和买卖历史不动',async t=>{
+  const {store,bind}=setup(t),s=store.state({raw:true});s.fundWatchlist=[{code:'011609',name:'科创基金'}];store.save(s,s.revision);
+  const cash=store.state().assets[0].value,original='删除科创持仓记录',args={query:'科创',target:'holding'};
+  const result=await bind(original,'remove-holding').removeInstrument(args);
+  assert.equal(result.status,'applied');assert.equal(store.state().assets.length,1);assert.equal(store.state().assets[0].value,cash);assert.equal(store.state().fundWatchlist.length,1);
+  assert.equal((await bind(original,'remove-holding').removeInstrument(args)).replayed,true);assert.equal(store.ledgerEntries().length,1);
+  assert.ok(store.audit().some(a=>a.label.includes('删除持仓')));
+  const watch=await bind('移除科创自选','remove-watch').removeInstrument({query:'科创',target:'watchlist'});
+  assert.equal(watch.status,'applied');assert.equal(store.state().fundWatchlist.length,0);assert.equal(store.ledgerEntries().length,2);assert.equal(store.state().assets[0].value,cash);
+});
+test('删除范围和标的缺项能补答，旧版不需要保留承接用户标的，助手名称不能授权删除',async t=>{
+  const {store,bind}=setup(t),s=store.state({raw:true});s.fundWatchlist=[{code:'011609',name:'科创基金'}];store.save(s,s.revision);
+  const original='删除科创',args={query:'科创',target:'holding'};
+  const first=await bind(original).removeInstrument(args);assert.equal(first.status,'needs_information');
+  const history=[{role:'user',content:original},{role:'assistant',content:first.question,metadata:{toolCalls:[{name:'remove_instrument',output:first}]}}];
+  const result=await bind('自选','remove-follow',{history}).removeInstrument({...args,target:'watchlist'});
+  assert.equal(result.status,'applied');assert.equal(store.state().assets.length,2);
+  const prior=[{role:'user',content:'科创基金是0了为什么还在持仓里？'},{role:'assistant',content:'你可以删除零持仓记录。'}];
+  assert.equal((await bind('不需要保留','remove-legacy',{history:prior}).removeInstrument(args)).status,'applied');
+  const noTarget=[{role:'user',content:'为什么还在持仓里？'},{role:'assistant',content:'你可以删除科创基金。'}];
+  assert.equal((await bind('不需要保留','remove-no-target',{history:noTarget}).removeInstrument(args)).status,'needs_information');
+});
+test('删除拒绝否定、假设、含糊目标、待入账和撤回授权，失败原子回滚',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),args={query:'科创',target:'holding'};
+  for(const question of ['不要删除科创持仓','如果删除科创持仓','科创持仓怎么样','删除持仓']){
+    assert.notEqual((await bind(question).removeInstrument(args)).status,'applied');
+  }
+  store.db.exec("CREATE TRIGGER reject_removal BEFORE INSERT ON ledger_entries BEGIN SELECT RAISE(ABORT,'removal receipt failure'); END");
+  await assert.rejects(bind('删除科创持仓').removeInstrument(args),/removal receipt failure/);assert.deepEqual(store.state({raw:true}),before);
+  store.db.exec('DROP TRIGGER reject_removal');
+  store.postLedgerEntry({id:'pending-removal-test',asset:{id:'star'},status:'pending',signature:'pending-removal-test',generation:store.ledgerGeneration(),createdAt:now.toISOString()});
+  const pending=await bind('删除科创持仓').removeInstrument(args);assert.equal(pending.status,'needs_information');assert.match(pending.question,/待入账/);
+  store.saveConfig({allowLedgerWrites:false});await assert.rejects(bind('删除科创持仓').removeInstrument(args),/未开启|授权/);assert.deepEqual(store.state({raw:true}),before);
 });

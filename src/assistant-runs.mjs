@@ -106,7 +106,9 @@ export function createAssistantRuns(store,{dataDir,services}) {
       if(conversationId&&!thread)throw error('对话不存在或已删除',404);
       if(thread&&thread.scope_id!==config.scopeId)throw error('模型或授权设置已变更，请新建对话继续');
       thread??=store.createConversation(config.scopeId,question);
-      const meta={id:randomUUID(),requestId,scopeId:config.scopeId,ledgerGeneration:store.ledgerGeneration(),conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id).slice(-12):[],startedAt:Date.now()};
+      // Local evidence checks need the start of an unfinished instruction even
+      // after six rounds. openAssistantRun independently bounds model history.
+      const meta={id:randomUUID(),requestId,scopeId:config.scopeId,ledgerGeneration:store.ledgerGeneration(),conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id):[],startedAt:Date.now()};
       if(config.includePageData)meta.pageData=buildAssistantData(store,meta.snapshot);
       // Saving the frozen context precedes both opening and submitting work.
       store.setKV(KEY,meta);
