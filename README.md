@@ -57,7 +57,9 @@ With local bookkeeping enabled, the assistant can also delete a specified stock 
 
 Stock quotes use Tencent public market data and optional local Futu OpenD access. Fund valuations use published unit NAVs from Eastmoney. Market dashboards also use Cboe daily VIX closes, Tencent Hang Seng volatility quotes, and public US macro sources. Data may be delayed; the app keeps source timestamps, retains cached values on failure, and leaves unavailable values empty.
 
-**买入待办** lists planned purchases in the overview and its own page. Plans can be edited, marked as executed, cancelled or restored; these actions only update the plan. Record actual transactions separately to update holdings and cash. Plans are saved with ledger backups.
+**买入待办** supports both manual status tracking and **登记成交**. Registering a confirmed purchase links the plan to a ledger entry and updates holdings and cash together. If the requested price is pending, the plan waits for settlement.
+
+**资产与负债 → 账户对账** compares a statement balance or quantity with the saved account snapshot. A cash adjustment requires a reason and explicit selection. **收入与计划 → 90 天现金流** projects daily balances with an optional purchase-plan scenario. **每日总结 → 月度变化拆解** uses a complete prior month-end snapshot and attributes verified movements, keeping unexplained amounts separate.
 
 In **基金 → 自选 → 添加自选**, search a fund name or six-digit code and select a result, or enter a code directly to look up its name. Search uses [Eastmoney's public fund directory](https://fund.eastmoney.com/) and falls back to saved funds when unavailable; manual code/name entry remains available. Use **更新净值** for the whole watchlist or **更新** on a row. Watchlists and purchase plans do not affect asset totals.
 

@@ -67,7 +67,7 @@ const chatDrafts=new Map();
 const currentChatRun=()=>chatActiveConversationId?data.conversation?.id===chatActiveConversationId:chatOriginViewEpoch===chatViewEpoch;
 function applyChatData(value,select=false) {
   if(value.config)data.config=value.config;
-  for(const key of ['state','metrics','rules','history','valuation','incomeSchedule','ledgerEntries','reports','audit'])if(key in value)data[key]=value[key];
+  for(const key of ['state','metrics','rules','history','valuation','incomeSchedule','ledgerEntries','pendingEntries','reports','audit'])if(key in value)data[key]=value[key];
   if(value.conversations)data.conversations=value.conversations;
   if('run' in value)data.chatRun=value.run;
   if(select||!('conversation' in value)||value.conversation?.id===data.conversation?.id||(currentChatRun()&&!data.conversation)) {
@@ -93,7 +93,7 @@ async function preserveChatView(value) {
   } else if(previous&&previous.conversation===null){value.conversation=null;value.messages=[];}
   return value;
 }
-let selectedTrendDay='',trendRange='recent',assetQuery='',fundQuery='',fundView='holdings',fundWatchBusy=false,stockMarketFilter='all',reportBusy=false,navCollapsed=false;
+let selectedTrendDay='',trendRange='7',assetQuery='',fundQuery='',fundView='holdings',fundWatchBusy=false,stockMarketFilter='all',reportBusy=false,navCollapsed=false;
 let buyPlanFilter='pending',fundLookupTimer,fundSearchEpoch=0,fundSearchResults=[];
 const usMarketPages=[['us-monthly','chart','纳指月度表现'],['us-quotes','chart','美股行情']];
 const cnMarketPages=[['cn-etf','chart','ETF 资金观察']];
@@ -335,8 +335,9 @@ function pendingBuyPlans() {
 function buyPlanRows(plans) {
   const day=today(data.state.preferences.timeZone),statuses={pending:'待执行',completed:'已执行',cancelled:'已取消'};
   return plans.map(p=>{
+    const waiting=(data.pendingEntries||[]).find(e=>e.planId===p.id);
     const due=p.status==='pending'&&p.plannedDate&&p.plannedDate<=day;
-    return `<article class="buy-plan-row"><div class="buy-plan-main"><div class="buy-plan-title"><strong>${esc(p.name)}</strong>${p.code?`<span>${esc(p.code)}</span>`:''}<span class="pill ${p.status==='pending'?'caution':'info'}">${statuses[p.status]}</span>${due?`<span class="buy-plan-due">${p.plannedDate<day?'已过计划日期':'今日计划'}</span>`:''}</div><p>${p.amount==null?'金额待定':p.currency==='CNY'?money(p.amount):esc(p.currency)+' '+p.amount.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})} · ${p.plannedDate?'计划 '+esc(p.plannedDate):'日期待定'}${p.completedOn?' · 执行 '+esc(p.completedOn):''}</p>${p.condition?`<p class="buy-plan-condition">${esc(p.condition)}</p>`:''}</div><div class="buy-plan-actions">${p.status==='pending'?`<button type="button" class="btn btn-soft" data-action="buy-plan-status" data-status="completed" data-id="${esc(p.id)}">标记已执行</button><button type="button" class="text-btn" data-action="edit-buy-plan" data-id="${esc(p.id)}">编辑</button><button type="button" class="text-btn" data-action="buy-plan-status" data-status="cancelled" data-id="${esc(p.id)}">取消计划</button>`:`<button type="button" class="text-btn" data-action="buy-plan-status" data-status="pending" data-id="${esc(p.id)}">恢复待办</button>`}</div></article>`;
+    return `<article class="buy-plan-row"><div class="buy-plan-main"><div class="buy-plan-title"><strong>${esc(p.name)}</strong>${p.code?`<span>${esc(p.code)}</span>`:''}<span class="pill ${p.status==='pending'?'caution':'info'}">${waiting?'待确认份额／股数':statuses[p.status]}</span>${due?`<span class="buy-plan-due">${p.plannedDate<day?'已过计划日期':'今日计划'}</span>`:''}</div><p>${p.amount==null?'金额待定':p.currency==='CNY'?money(p.amount):esc(p.currency)+' '+p.amount.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})} · ${p.plannedDate?'计划 '+esc(p.plannedDate):'日期待定'}${p.completedOn?' · 执行 '+esc(p.completedOn):''}</p>${p.condition?`<p class="buy-plan-condition">${esc(p.condition)}</p>`:''}</div><div class="buy-plan-actions">${waiting?`<button class="text-btn" data-action="ledger-all" data-entry="${esc(waiting.id)}">查看待入账流水</button>`:p.entryId?`<button class="text-btn" data-action="ledger-all" data-entry="${esc(p.entryId)}">查看成交流水</button>`:p.status==='pending'?`<button class="btn btn-primary" data-action="plan-execute" data-id="${esc(p.id)}">登记成交</button><button type="button" class="btn btn-soft" data-action="buy-plan-status" data-status="completed" data-id="${esc(p.id)}">标记已执行</button><button type="button" class="text-btn" data-action="edit-buy-plan" data-id="${esc(p.id)}">编辑</button><button type="button" class="text-btn" data-action="buy-plan-status" data-status="cancelled" data-id="${esc(p.id)}">取消计划</button>`:`<button type="button" class="text-btn" data-action="buy-plan-status" data-status="pending" data-id="${esc(p.id)}">恢复待办</button>`}</div></article>`;
   }).join('');
 }
 function buyPlansSection() {
@@ -351,9 +352,35 @@ function buyPlanDialog(id,code) {
   const plan=(data.state.buyPlans||[]).find(p=>p.id===id),fund=(data.state.fundWatchlist||[]).find(f=>f.code===code),p=plan||{name:fund?.name||'',code:fund?.code||'',currency:'CNY'};
   showDialog(id?'编辑买入待办':'添加买入待办','填写想买入的标的、金额和条件，执行后可回来标记。',`<form id="buy-plan-form"><input type="hidden" name="id" value="${esc(id||'')}"/><div class="form-grid">${field('买入标的','name',p.name,{type:'text',required:true,full:true,maxlength:120,placeholder:'例如：沪深300指数基金、腾讯控股'})}${field('标的代码（选填）','code',p.code,{type:'text',maxlength:40,placeholder:'基金代码或股票市场代码'})}${select('币种','currency',p.currency,[['CNY','CNY · 人民币'],['HKD','HKD · 港币'],['USD','USD · 美元']])}${field('计划买入金额（选填）','amount',p.amount,{min:0.01,placeholder:'金额待定可留空'})}${field('计划买入日期（选填）','plannedDate',p.plannedDate,{type:'date'})}${field('买入条件与备注（选填）','condition',p.condition,{type:'text',full:true,maxlength:1000,placeholder:'例如：回调后分批买入，先确认现金余额'})}</div><div class="form-actions"><button type="button" class="btn btn-secondary" data-action="close-dialog">取消</button><button type="submit" class="btn btn-primary">保存待办</button></div></form>`);
 }
+const reviewStorageKey = 'steady.quarterlyReview.completed';
+const firstReview = Date.UTC(2027, 0, 5, 12); // 20:00 in Shanghai
+
+function quarterlyReviewHTML(now = Date.now()) {
+  const shanghai = new Date(now + 8 * 3600000);
+  const year = shanghai.getUTCFullYear();
+  const month = Math.floor(shanghai.getUTCMonth() / 3) * 3;
+  const quarterDate = offset => Date.UTC(year, month + offset, 5, 12);
+  const latest = now >= quarterDate(0) ? quarterDate(0) : quarterDate(-3);
+  const next = Math.max(firstReview, latest === quarterDate(0) ? quarterDate(3) : quarterDate(0));
+  let completed;
+  try { completed = localStorage.getItem(reviewStorageKey); } catch {}
+  const due = latest >= firstReview && completed !== String(latest);
+  const date = new Date(due ? latest : next);
+  const when = due ? '本季待复盘' : '下次提醒';
+  const detail = due ? '核对实际持仓与目标配置，结合资金需求决定是否调仓。' :
+    date.toLocaleDateString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'long', day:'numeric'}) + ' 20:00（北京时间）';
+  return `<section id="quarterly-review" class="card welcome"><div><h2>季度持仓复盘</h2><p>${when} · ${detail}</p></div>${due ? button('complete-quarterly-review','标记已复盘','','secondary',`data-review="${latest}"`) : ''}</section>`;
+}
+
+function refreshQuarterlyReview() {
+  const card = document.querySelector('#quarterly-review');
+  if (card) card.outerHTML = quarterlyReviewHTML();
+}
+
 function dashboard() {
   const m=data.metrics, s=data.state, risk=data.rules.filter(r=>r.level!=='info').length, hasData=s.assets.length||s.debts.length;
   return `${heading('财务总览','',button('market-refresh','更新行情','refresh')+button('open-ai','个人助手','spark')+button('add-asset','记录资产','plus','primary'))}
+  ${quarterlyReviewHTML()}
   ${!hasData?`<div class="card welcome"><div><h2>还没有资产记录</h2><p>添加资产、负债和收支后计算汇总。</p></div><div class="welcome-actions">${button('demo','载入演示数据','','secondary')}${button('add-asset','开始记录','arrow','primary')}</div></div>`:''}
   <div class="dashboard-hero"><div class="card wealth-card"><div><div class="wealth-top"><span class="label">已登记净资产${!m.complete?' · 部分估值待补充':''}</span></div><div class="net-worth">${privateAmount('dashboard-net-worth',m.netWorth,'已登记净资产',{hero:true})}</div>${dailyChangeHTML()}</div><div class="wealth-bottom"><div><span class="label">总资产</span><div class="money">${privateAmount('dashboard-total-assets',m.totalAssets,'总资产')}</div></div><div><span class="label">总负债</span><div class="money">${privateAmount('dashboard-total-debt',m.totalDebt,'总负债')}</div></div></div></div>${allocation()}</div>
   ${dailyHistoryHTML()}<div class="metrics-grid">${metric('可支配现金',privateAmount('dashboard-cash',m.availableCash,'可支配现金'),'不含受限、应急与专项预留','wallet')}${metric('股票配置比例',stockPercent(m),`谨慎线 ${s.policy.stockCaution}% · ${m.stockRatio!==null && m.stockRatio>s.policy.stockCaution?'当前超过':'基金配置 '+percent(m.fundRatio)+' · 分开统计'}`,'chart',m.stockRatio>s.policy.stockCaution)}${metric('每月经常性结余',privateAmount('dashboard-surplus',m.surplus,'每月经常性结余'),m.surplus===null?'补齐收入、生活支出和月供后计算':'税后收入 − 必要开支 − 月供','flow',m.surplus!==null&&m.surplus<0)}${metric('必要支出储备',m.reserveMonths===null?'—':m.reserveMonths.toFixed(1)+' 个月',`目标 ${s.profile.emergencyMonths} 个月 · 按流动现金储备`,'shield')}</div>
@@ -540,10 +567,40 @@ async function priceHistoryDialog(id){
     if(activePriceHistory===view&&$('#dialog').open&&$('#price-history-view'))$('#price-history-view').innerHTML=`<p class="instrument-status" role="alert">${esc(error.message)}</p>${button('asset-price-history','重新读取','refresh','secondary',`data-id="${esc(id)}"`)}`;
   }
 }
+const ledgerStatuses={pending:'待入账',applied:'已入账',blocked:'需核对',cancelled:'已取消',reversed:'已冲回'};
+const accountOptions=assets=>assets.map(a=>[esc(a.id),esc(a.name+' · '+(a.account||a.currency))]);
+const submitButton=label=>`<button class="btn btn-primary" type="submit">${label}</button>`;
+function executeDialog(plan){
+  const holdings=data.state.assets.filter(a=>(a.security||a.fund?.code)&&a.currency===plan.currency&&(!plan.code||[a.security?.key,a.security?.symbol,a.fund?.code].includes(plan.code)));
+  const cash=data.state.assets.filter(a=>a.type==='cash'&&!a.restricted&&a.currency===plan.currency);
+  const choices=accountOptions(holdings);
+  if(!choices.length&&plan.code)choices.push(['new',/^\d{6}$/.test(plan.code)?'新建基金持仓':'新建股票持仓']);
+  if(!cash.length||!choices.length)return toast('请先登记匹配的持仓和同币种现金账户');
+  showDialog('登记实际成交',plan.name,`<form id="plan-execution" data-id="${esc(plan.id)}" data-revision="${data.state.revision}"><div class="form-grid">${select('标的', 'assetId','',choices)}${select('扣款账户','cashAssetId','',accountOptions(cash))}${field('实际总扣款（含费） / '+esc(plan.currency),'amount',plan.amount,{required:true,min:0.01})}${field('其中费用','fee',0,{required:true})}${field('实际成交日','date',today(data.state.preferences.timeZone),{type:'date',required:true})}${field('每股或每份成交价','price','',{help:'留空按指定交易日收盘价或披露净值估算。'})}</div>${submitButton('确认登记成交')}</form>`);
+}
+async function ledgerDialog(query={}){
+  const page=await api('/ledger/entries?'+new URLSearchParams(query));
+  const rows=page.items.map(e=>`<div class="ledger-record"><div><strong>${esc(e.label)}</strong><small>${esc(e.date)} · ${esc(ledgerStatuses[e.status]||e.status)} ${e.amount!=null?esc(e.amount)+' '+esc(e.asset?.currency||''):''}</small><p>${esc(e.reason||e.message||'')}</p>${e.kind==='reconcile'?`账面 ${esc(e.book)} · 实际 ${esc(e.actual)} · 差额 ${esc(e.difference)}`:''}</div>${e.status==='pending'?`<button class="text-btn" data-action="cancel-ledger-entry" data-id="${esc(e.id)}">取消</button>`:''}</div>`).join('');
+  showDialog('全部流水',`共 ${page.total} 条`,`<form id="ledger-filter"><div class="form-grid">${select('账户或持仓','assetId',esc(query.assetId||''),[['','全部'],...accountOptions(data.state.assets)])}${select('状态','status',query.status,[['','全部'],...Object.entries(ledgerStatuses)])}${field('起始日','from',query.from,{type:'date'})}${field('截止日','to',query.to,{type:'date'})}</div>${submitButton('查询')}</form>${rows||'<p>没有匹配的流水。</p>'}<div class="form-actions">${page.offset?`<button data-action="ledger-page" data-offset="${Math.max(0,page.offset-page.limit)}">上一页</button>`:''}${page.nextOffset!=null?`<button data-action="ledger-page" data-offset="${page.nextOffset}">下一页</button>`:''}</div>`);
+}
+function reconcileDialog(){
+  const assets=data.state.assets.filter(a=>['cash','stock','fund'].includes(a.type));
+  if(!assets.length)return toast('先登记一个现金账户或持仓');
+  showDialog('账户对账','核对账单日期对应的余额或份额。',`<form id="reconcile-form" data-revision="${data.state.revision}"><div class="form-grid">${select('账户或持仓','assetId','',accountOptions(assets))}${field('账单日期','date',today(data.state.preferences.timeZone),{type:'date',required:true})}${field('实际余额（原币）或持仓数量','actual','',{required:true})}</div>${submitButton('核对差额')}</form>`);
+}
+async function calendarDialog(plans=false){
+  const c=await api('/planning/calendar?plans='+(plans?'1':'0'));
+  showDialog('未来 90 天现金流',`以 ${c.day} 已登记非受限现金为起点，含专项及应急预留，按人民币折算。`,`<p>起点 ${money(c.opening)} · 预计最低 ${money(c.low)}（${esc(c.lowDate)}）</p><button class="btn btn-soft" data-action="cash-calendar" data-plans="${plans?'0':'1'}">${plans?'移除买入计划假设':'计入待执行的买入计划'}</button><p>工资按发薪日、生活费按日均、月供按月末估算。已计入生活费的保费按日均分摊。</p>${c.missing.map(s=>`<p>${esc(s)}</p>`).join('')}<table><thead><tr><th>日期</th><th>收支</th><th>预计余额</th></tr></thead><tbody>${c.rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${r.events.map(e=>esc(e.name)+' '+money(e.amount)).join('<br>')||'—'}</td><td>${money(r.balance)}</td></tr>`).join('')}</tbody></table>`);
+}
+async function monthlyDialog(month=today(data.state.preferences.timeZone).slice(0,7)){
+  const m=await api('/reports/month?month='+encodeURIComponent(month));
+  showDialog('月度净资产变化','按人民币计算，使用上月末与本月最近完整快照。',`<form id="monthly-bridge">${field('月份','month',month,{type:'month',required:true})}${submitButton('查看')}</form>${m.complete?`<p>${esc(m.from)} 至 ${esc(m.to)}</p>${[['净资产变化','total'],['已确认收支（含工资）','cash'],['可核实的持仓估值变化','market'],['汇率变化','fx'],['现金对账调整','adjustments'],['其他或无法归因','other']].map(([label,key])=>`<div class="cash-flow-line"><span>${label}</span><strong>${money(m[key])}</strong></div>`).join('')}`:`<p>${esc(m.reason)}</p>`}`);
+}
+
 function ledgerEntriesHTML() {
-  const entries=data.ledgerEntries||[];if(!entries.length)return '';
-  const pending=entries.filter(e=>e.status==='pending').length,names={pending:'待入账',applied:'已入账',blocked:'需核对',cancelled:'已取消'};
-  return `<details class="ledger-records" ${pending?'open':''}><summary>对话记账${pending?' · '+pending+' 笔待入账':''}</summary>${entries.slice(0,12).map(e=>`<div class="ledger-record"><div><strong>${esc(e.label)}</strong><small>${esc(e.date)} · ${names[e.status]||esc(e.status)}${e.amount!=null?' · '+Number(e.amount).toLocaleString('zh-CN',{maximumFractionDigits:2})+' '+esc(e.asset.currency):''}${e.cashSource?' · '+(e.cashSource==='outside'?'额外投入／账外资金':'已登记现金'):''}${e.estimated?' · 按价格估算':''}</small>${e.status==='pending'?'<p>等待指定日期的收盘价／披露净值，取得后自动更新持仓与现金。</p>':e.message?'<p>'+esc(e.message)+'</p>':''}</div>${e.status==='pending'?`<button type="button" class="text-btn" data-action="cancel-ledger-entry" data-id="${esc(e.id)}">取消</button>`:''}</div>`).join('')}</details>`;
+  const queue=data.pendingEntries||[];const entries=[...queue,...(data.ledgerEntries||[]).filter(e=>!queue.some(p=>p.id===e.id))];if(!entries.length)return '';
+  const pending=entries.filter(e=>e.status==='pending').length,names=ledgerStatuses;
+  return `<details class="ledger-records" ${pending?'open':''}><summary>对话记账${pending?' · '+pending+' 笔待入账':''}</summary><button class="text-btn" data-action="ledger-all">查询全部流水</button>${entries.slice(0,Math.max(pending,12)).map(e=>`<div class="ledger-record"><div><strong>${esc(e.label)}</strong><small>${esc(e.date)} · ${names[e.status]||esc(e.status)}${e.amount!=null?' · '+Number(e.amount).toLocaleString('zh-CN',{maximumFractionDigits:2})+' '+esc(e.asset.currency):''}${e.cashSource?' · '+(e.cashSource==='outside'?'额外投入／账外资金':'已登记现金'):''}${e.estimated?' · 按价格估算':''}</small>${e.status==='pending'?'<p>等待指定日期的收盘价／披露净值，取得后自动更新持仓与现金。</p>':e.message?'<p>'+esc(e.message)+'</p>':''}</div>${e.status==='pending'?`<button type="button" class="text-btn" data-action="cancel-ledger-entry" data-id="${esc(e.id)}">取消</button>`:''}</div>`).join('')}</details>`;
 }
 function fundsPage() {
   const watch=fundView==='watchlist',assets=watch?filteredFundWatchlist():filteredFunds(),allocation=fundAllocation();
@@ -556,7 +613,7 @@ function fundsPage() {
 function assetsPage() {
   const s=data.state,m=data.metrics;
   const assets=filteredAssets();
-  return `${heading('资产与负债','',button('import-csv','导入 CSV','upload')+button('add-asset','记录资产','plus','primary'))}
+  return `${heading('资产与负债','',button('reconcile','账户对账','report')+button('import-csv','导入 CSV','upload')+button('add-asset','记录资产','plus','primary'))}
     ${ledgerEntriesHTML()}
     <div class="asset-tools"><label class="asset-search"><input id="asset-search" type="search" aria-label="搜索资产" placeholder="搜索名称、股票代码、基金代码或账户" value="${esc(assetQuery)}"/><button id="clear-asset-search" type="button" class="icon-btn" data-action="clear-asset-search" aria-label="清空搜索" ${assetQuery?'':'hidden'}>${icon('close',14)}</button></label><span id="asset-result-count" class="asset-result-count" role="status">${assetResultCount(assets)}</span></div>
     <div class="filter-bar">${[['all','全部资产'],['cash','现金'],['stock','股票'],['fund','基金'],['bond','债券'],['gold','黄金'],['insurance','保险'],['other','其他']].map(([v,l])=>`<button class="filter ${assetFilter===v?'active':''}" data-action="asset-filter" data-filter="${v}">${l}</button>`).join('')}<div class="toolbar-end"><a class="text-btn" href="/api/template">下载模板 ${icon('download',12)}</a></div></div>
@@ -574,7 +631,7 @@ function incomeScheduleHTML(){
 }
 function cashflowPage() {
   const p=data.state.profile,m=data.metrics,b=p.background||{},auto=p.autoIncome||{},cash=data.state.assets.filter(a=>a.type==='cash'&&a.currency==='CNY'&&!a.restricted);
-  return `${heading('收入与计划','')}
+  return `${heading('收入与计划','',button('cash-calendar','90 天现金流','report'))}
     ${ledgerEntriesHTML()}
     <div class="two-columns cashflow-layout"><form class="card form-card" id="profile-form"><h2>每月现金流</h2><p class="form-intro">填写税后经常性收入与必要开支。奖金等不确定收入暂不计入。</p><div class="form-grid">${field('税后经常性月收入 / 元','income',p.income,{placeholder:'例如 30000'})}${field('每月必要生活支出 / 元','expenses',p.expenses,{placeholder:'不含贷款月供'})}${select('收入稳定程度','incomeStability',p.incomeStability,[['unknown','尚未说明'],['stable','固定工资为主'],['variable','收入有波动'],['none','暂时无收入']])}${field('每月发薪日','payday',p.payday,{min:1,max:31,step:1})}<div class="full">${checkbox('incomeAutoCredit','每月按发薪日自动记入现金',auto.enabled)}</div>${select('工资入账账户','incomeCashAssetId',auto.cashAssetId||cash[0]?.id||'',[['','请选择现金账户'],...cash.map(a=>[a.id,a.name+' · CNY'])])}${field('自动入账起始日期','incomeStartsOn',auto.startsOn||today(data.state.preferences.timeZone),{type:'date',help:'从此日期起的发薪日开始记账；遇到不存在的日期按月末。'})}<div class="full">${incomeScheduleHTML()}</div>${field('应急储备目标 / 月','emergencyMonths',p.emergencyMonths,{help:'初始建议值可调整，属于现代适配，不是原著要求。',full:true})}</div><div class="form-actions">${draftNotice('profile-form')}<button class="btn btn-primary" type="submit">保存现金流</button></div></form>
     <div class="card form-card"><h2>现金流汇总</h2><p class="form-intro">按当前已登记资料计算</p><div class="cash-flow-line"><span>税后经常性收入</span><b class="money">${money(m.income)}</b></div><div class="cash-flow-line"><span>已登记生活支出</span><b class="money">${money(m.baseExpenses)}</b></div><div class="cash-flow-line"><span>额外续期保费（月均）</span><b class="money">${money(m.insuranceExpenseComplete?m.insuranceExpense:null)}</b></div><div class="cash-flow-line"><span>每月债务偿还</span><b class="money">${money(m.paymentComplete?m.payment:null)}</b></div><div class="cash-flow-total"><span>月度经常性结余</span><strong class="money ${m.surplus!==null&&m.surplus<0?'negative':''}">${privateAmount('cashflow-surplus',m.surplus,'月度经常性结余')}</strong></div><p class="inline-note">保费只补计未包含在生活开支中的部分；年缴保费仍须准备缴费日现金。投资投入、可选消费和一次性支出需另行考虑；未到账收入不计入可支配现金。</p></div>
@@ -650,7 +707,7 @@ function reportsPage() {
   const reports=data.reports, report=reports.find(r=>r.day===selectedReport)||reports[0];
   const briefs=data.marketBriefs?.latest||[],stale=report&&report.day===today(data.state.preferences.timeZone)&&Number.isInteger(report.revision)&&report.revision!==data.state.revision;
   const tasks=report?.rules.slice(0,3).map(r=>r.id==='stale'?'更新过期资产估值':r.id==='missing'?'补齐收入、支出及缺失字段':r.id==='stock-caution'?'新增投资前，个人助手 复核股票比例与资金用途':r.id==='cashflow'?'核对必要开支与还款安排，优先处理每月缺口':r.id==='empty'?'添加第一项资产与每月收支':`复核“${r.title}”的依据`)||[];
-  return `${heading('每日总结','',button('generate-report',reportBusy?'正在生成…':'生成今日总结','refresh','primary',reportBusy?'disabled aria-busy="true"':''))}
+  return `${heading('每日总结','',button('month-bridge','月度变化拆解','report')+button('generate-report',reportBusy?'正在生成…':'生成今日总结','refresh','primary',reportBusy?'disabled aria-busy="true"':''))}
     ${!report?`<div class="card report-empty">${empty('给今天留下一份财务快照','总结会保留数据时点、配置提醒和待办事项。无 AI 连接也可以生成。',button('generate-report',reportBusy?'正在生成…':'生成第一份总结','report','soft',reportBusy?'disabled':''))}</div>`:`
     <div class="report-layout">
       <nav class="report-nav" aria-label="历史日报"><span class="report-nav-label">${icon('clock',15)} 日报归档</span><div class="report-date-list">${reports.map(r=>`<button type="button" class="report-day ${r.day===report.day?'active':''}" data-action="select-report" data-day="${esc(r.day)}" aria-pressed="${r.day===report.day}"><time datetime="${esc(r.day)}">${esc(r.day)}</time>${r.isDemo||r.late?`<small>${r.isDemo?'演示':r.late?'补生成':''}</small>`:''}</button>`).join('')}</div></nav>
@@ -662,7 +719,7 @@ function reportsPage() {
           <div><small>股票配置比例</small><strong class="money${report.metrics.stockRatio==null?' is-pending':report.metrics.stockRatioMax!=null&&Math.abs(report.metrics.stockRatioMax-report.metrics.stockRatio)>.01?' is-range':''}">${stockPercent(report.metrics)}</strong><span>长期配置资产池口径</span></div>
           <div><small>月度经常性结余</small><strong class="money${report.metrics.surplus==null?' is-pending':''}">${privateAmount('report-surplus-'+report.day,report.metrics.surplus,'日报月度结余')}</strong>${report.metrics.surplus==null?'<a href="#cashflow">完善收支资料 ↗</a>':'<span>按已登记收支与还款计算</span>'}</div>
         </div>
-        <div class="report-change"><div><h3>与上次已登记日期相比</h3><p>${report.changes==null?'尚无更早的已登记快照，暂不展示变化。':esc(report.changeLabel)+'。'}</p></div><strong class="money">${report.changes==null?'—':privateAmount('report-change-'+report.day,report.changes,'与上次相比的估值变化',{format:changeAmount})}</strong></div>
+        <div class="report-change"><div><h3>与上次已登记日期相比</h3><p>${report.changes==null?esc(report.changeReason||'缺少可比较的完整快照。'):esc(report.changeLabel)+'。'}</p></div><strong class="money">${report.changes==null?'—':privateAmount('report-change-'+report.day,report.changes,'与上次相比的估值变化',{format:changeAmount})}</strong></div>
         <div class="report-insights">
           <section class="report-section"><h3>当前值得留意<span class="report-count">${report.rules.length}</span></h3><div class="report-rule-list">${rulesHTML(report.rules,20,true)}</div></section>
           <section class="report-section report-next"><h3>接下来可以做</h3><ol>${(tasks.length?tasks:['定期更新资产与支出计划，维持自己的纪律。']).map(task=>`<li>${esc(task)}</li>`).join('')}</ol></section>
@@ -683,7 +740,7 @@ function aiSettings() {
     <div class="privacy-preview" style="margin-top:23px"><strong>哪些资料会发给模型</strong><br>你的问题、资产负债汇总、保险现金价值与保费、收支、投资纪律、支出计划及已填写的个人背景。未开启完整页面资料时，不发送账户名称、借款机构、资产备注；开启后这些已保存业务资料也可读取。开启上下文后，只追加当前对话、同一连接及授权设置下最近的问答，其他对话不会混入。完整记录保存在本机，可从左侧历史查看。问题和个人背景中的文字也会发送，请避免填写身份与账户凭据。${c.baseUrl?'<br>当前目标：'+esc(c.baseUrl):''}</div>
     ${checkbox('consent','允许向上述服务发送财务摘要与选填个人背景',c.consent)}
     ${checkbox('includeHoldings','同时发送持仓、保单与负债的名称、类型、估值与日期',c.includeHoldings)}
-    ${checkbox('includePageData','允许 AI 读取全部页面业务资料，包括账户名称、备注、成本、历史、日报及市场数据',c.includePageData)}<p class="inline-note">开启后，每轮自动提供完整已保存财务档案与各页最新数据；图表历史、日报归档由只读工具直接读取。包含上方的持仓名称范围，不受金额隐藏或页面筛选影响；未保存草稿不发送。登录密码、API Key 和密钥文件不进入模型上下文。</p>
+    ${checkbox('includePageData','允许 AI 读取全部页面业务资料，包括账户名称、备注、成本、历史、日报及市场数据',c.includePageData)}<p class="inline-note">工具开启时，每轮先提供财务摘要和页面目录，助手按需读取账户、流水、图表和日报；关闭工具时使用本轮摘要。包含上方的持仓名称范围，不受金额隐藏或页面筛选影响；未保存草稿不发送。登录密码、API Key 和密钥文件不进入模型上下文。</p>
     ${checkbox('includeHistory','携带当前对话上下文，支持连续追问（最近 6 轮，最多 24,000 字符）',c.includeHistory)}
     ${checkbox('useTools','启用行情、财务计算及已授权的记账工具（模型需支持工具调用）',c.useTools!==false)}
     ${checkbox('allowLedgerWrites','允许 AI 根据我的明确指令更新本地持仓和现金记录',c.allowLedgerWrites)}<p class="inline-note">买入先确认现有现金或额外投入；行情未披露时保存待入账记录。只更新本地账本，不连接券商交易。记账变动可在最近修改中恢复。</p>
@@ -783,7 +840,7 @@ function assetDialog(id, draft) {
   ${a.type==='gold_margin'?field('名义敞口','notional',a.notional)+field('可提取资金','available',a.available)+select('持仓方向','direction',a.direction||'long',[['long','多头'],['short','空头']]):''}
   ${auto?'':`<details class="full cost-entry"><summary>补充信息（选填）</summary>${field('这笔估值对应的日期','asOf',a.asOf||today(),{type:'date',help:'通常无需修改，留空按本次记录。'})}</details>`}
   </div>${checkbox('inPool','纳入长期配置资产池',a.inPool)}${a.type==='cash'?checkbox('restricted','资金受限',a.restricted):''}
-  ${a.reported?`<p class="inline-note">原始记录 ${esc(a.reported.date)} · 累计收益 ${money(a.reported.totalReturn)} · 累计分红 ${money(a.reported.dividends)}。分红不另计入现金。</p>`:''}
+  ${a.reported&&a.type!=='insurance'?`<p class="inline-note">原始记录 ${esc(a.reported.date)} · 累计收益 ${money(a.reported.totalReturn)} · 累计分红 ${money(a.reported.dividends)}。分红不另计入现金。</p>`:''}
   ${a.note?`<p class="inline-note">${esc(a.note)}</p>`:''}<div class="form-actions"><button class="btn btn-secondary" type="button" data-action="close-dialog">取消</button><button class="btn btn-primary" type="submit">保存资产</button></div></form>`);
 }
 function upcomingDialog(id) {
@@ -927,8 +984,19 @@ document.addEventListener('click',async event=>{
   const target=event.target.closest('[data-action]');if(!target)return;
   const action=target.dataset.action;
   try {
+    if(action==='complete-quarterly-review'){
+      localStorage.setItem(reviewStorageKey,target.dataset.review);
+      refreshQuarterlyReview();
+      return;
+    }
     if(action==='retry-start')return start();
-    if(action==='cancel-ledger-entry'){data=await preserveChatView(await api('/ledger/entries',{method:'DELETE',body:{id:target.dataset.id}}));render();return;}
+    if(action==='ledger-all')return await ledgerDialog(target.dataset.entry?{id:target.dataset.entry}:{});
+    if(action==='ledger-page')return await ledgerDialog({...Object.fromEntries(new FormData($('#ledger-filter'))),offset:target.dataset.offset});
+    if(action==='reconcile')return reconcileDialog();
+    if(action==='plan-execute')return executeDialog(data.state.buyPlans.find(p=>p.id===target.dataset.id));
+    if(action==='cash-calendar')return await calendarDialog(target.dataset.plans==='1');
+    if(action==='month-bridge')return await monthlyDialog();
+    if(action==='cancel-ledger-entry'){data=await preserveChatView(await api('/ledger/entries',{method:'DELETE',body:{id:target.dataset.id}}));render();if($('#dialog').open)await ledgerDialog();return;}
     if(action==='toggle-sidebar'){navCollapsed=!navCollapsed;render();$('[data-action="toggle-sidebar"]')?.focus?.();return;}
     if(action==='toggle-private-amount'){
       const key=target.dataset.amountKey;
@@ -1092,6 +1160,21 @@ document.addEventListener('submit',async event=>{
   const formId=form.getAttribute('id'), f=new FormData(form), submits=[...form.querySelectorAll('[type=submit]')];submits.forEach(button=>button.disabled=true);
   try{
     if(formId==='auth-form'){await api(auth.initialized?'/auth/login':'/auth/setup',{method:'POST',body:{password:f.get('password')}});auth.authenticated=true;auth.initialized=true;data=await api('/bootstrap');render();return;}
+    if(formId==='ledger-filter')return await ledgerDialog(Object.fromEntries(f));
+    if(formId==='monthly-bridge')return await monthlyDialog(f.get('month'));
+    if(formId==='plan-execution'){
+      const result=await api('/plans/execute',{method:'POST',body:{planId:form.dataset.id,revision:Number(form.dataset.revision),assetId:f.get('assetId'),newType:'fund',cashAssetId:f.get('cashAssetId'),date:f.get('date'),amount:numberValue(f,'amount'),fee:numberValue(f,'fee'),price:numberValue(f,'price')}});
+      data=await preserveChatView(await api('/bootstrap'));closeDialog();render();return toast(result.status==='pending'?'已登记，等待指定交易日价格':result.message||'已入账');
+    }
+    if(formId==='reconcile-form'){
+      const input={...Object.fromEntries(f),actual:numberValue(f,'actual'),revision:Number(form.dataset.revision)};
+      const r=await api('/ledger/reconcile',{method:'POST',body:input});
+      showDialog('确认对账',input.date,`<p>账面 ${esc(r.book)} · 实际 ${esc(r.actual)} · 差额 ${esc(r.difference)} ${esc(r.unit==='金额'?r.currency:r.unit)}</p><p>当前待入账 ${r.pendingCount} 笔 ${esc(r.pending.join('、'))}</p><form id="reconcile-save" data-input="${esc(JSON.stringify(input))}">${field('原因或核对说明','reason','',{type:'text',required:true,maxlength:300})}${r.unit==='金额'&&input.date===today(data.state.preferences.timeZone)&&!r.pendingCount&&r.difference?checkbox('adjust','将当前现金余额调整为实际余额'):''}${submitButton('保存核对记录')}</form>`);return;
+    }
+    if(formId==='reconcile-save'){
+      await api('/ledger/reconcile',{method:'POST',body:{...JSON.parse(form.dataset.input),reason:f.get('reason'),save:true,adjust:f.has('adjust')}});
+      data=await preserveChatView(await api('/bootstrap'));closeDialog();render();return toast('对账记录已保存');
+    }
     if(formId==='buy-plan-form'){
       const next=structuredClone(data.state);next.buyPlans=next.buyPlans||[];
       const id=String(f.get('id')||'')||crypto.randomUUID(),old=next.buyPlans.find(p=>p.id===id);
@@ -1185,6 +1268,8 @@ async function pollMarketQuotes() {
   const market=currentMarket();
   if(market&&canAutoRefresh())await loadMarket(market,false,true);
 }
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(isCNMarket()&&canAutoRefresh())void loadCNMarket();else void pollMarketQuotes();}});
+setInterval(refreshQuarterlyReview, 60000);
+window.addEventListener('storage', event => { if(event.key===reviewStorageKey) refreshQuarterlyReview(); });
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){refreshQuarterlyReview();if(isCNMarket()&&canAutoRefresh())void loadCNMarket();else void pollMarketQuotes();}});
 async function start(){try{auth=await api('/auth/status');if(!auth.authenticated)return renderAuth();data=await api('/bootstrap');render();if(data.chatRun?.status==='running'){chatRunId=data.chatRun.id;chatRequestId=data.chatRun.requestId;void resumeChat();}if(data.marketBriefs?.latest.some(b=>b.ai?.status==='generating'))pollMarketBriefs();for(const [market,interval] of [['HK',5000],['US',10000]])setInterval(()=>currentMarket()===market?pollMarketQuotes():undefined,interval);setInterval(async()=>{if(!canAutoRefresh()||currentMarket())return;if(isCNMarket()){await loadCNMarket();return;}if(route==='us-quotes'){await loadWatchboard();return;}if(!['dashboard','assets','reports'].includes(route))return;try{await refresh();}catch{}},60000);}catch(e){$('#app').innerHTML=`<div class="loading"><p>暂时无法打开财务空间</p><p style="font-size:12px;margin-top:12px">${esc(e.message)}</p><button class="btn btn-secondary" style="margin-top:18px" data-action="retry-start">重新连接</button></div>`;}}
 start();

@@ -49,7 +49,7 @@ test('完整页面授权控制自动上下文和读取工具；真实harness往�
   t.mock.method(globalThis,'fetch',async(_url,{body})=>{
     const req=JSON.parse(body),system=req.messages.find(m=>m.role==='system').content;
     if(!authorized){assert.ok(!system.includes('账户-100'));assert.ok(!req.tools.some(t=>t.function.name==='get_page_data'));return Response.json({choices:[{message:{content:'摘要测试完成'}}]});}
-    assert.ok(system.includes('账户-100'));assert.ok(!body.includes('PRIVATE_API_KEY'));assert.ok(req.tools.some(t=>t.function.name==='get_page_data'));
+    assert.ok(!system.includes('账户-100'));assert.ok(!body.includes('PRIVATE_API_KEY'));assert.ok(req.tools.some(t=>t.function.name==='get_page_data'));
     if(++calls===1)return Response.json({choices:[{message:{content:null,reasoning_content:'PRIVATE_REASONING',tool_calls:[{id:'page-read',type:'function',function:{name:'get_page_data',arguments:JSON.stringify({page:'assets',section:'assets',offset:100})}}]}}]});
     const output=JSON.parse(req.messages.at(-1).content);assert.equal(output.data[0].account,'账户-100');
     return Response.json({choices:[{message:{content:'页面工具已读取最后一项资产'}}]});

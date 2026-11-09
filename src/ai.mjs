@@ -7,7 +7,7 @@ import { Type } from 'typebox';
 import { calculate, evaluate, simulate, cashPaymentImpact, nowDate, DEFAULT_DISPLAY_NAME } from './domain.mjs';
 import { readEventStream } from '../public/sse.js';
 import { stockFundingPlan } from './budget.mjs';
-import { automaticPageContext, readAssistantPage, PAGE_NAMES } from './assistant-data.mjs';
+import { readAssistantPage, PAGE_NAMES } from './assistant-data.mjs';
 
 export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 120;
 function requestTimeout(config) {
@@ -36,7 +36,7 @@ const safeRules = rules => rules.map(r => ({ id: r.id.startsWith('issuer-') ? 'i
 function actionContext(result) {
   return { kind: result.kind, valid: result.valid, before: aggregate(result.before), after: aggregate(result.after), rules: safeRules(result.rules), netWorthIncomplete: result.netWorthIncomplete ?? false };
 }
-export function contextForAI(state, scenario = null, includeHoldings = false, pageData = null) {
+export function contextForAI(state, scenario = null, includeHoldings = false, pageData = null, onDemand = false) {
   const metrics = calculate(state), b = state.profile.background ?? {};
   const context = {
     currency: 'CNY', asOf: nowDate(state.preferences.timeZone), snapshotRevision: state.revision,
@@ -57,7 +57,13 @@ export function contextForAI(state, scenario = null, includeHoldings = false, pa
     scenario: scenario ? actionContext(scenario) : null
   };
   if (includeHoldings) { context.holdings = state.assets.slice(0,100).map(a=>({name:a.name,type:a.type,value:a.value,currency:a.currency,asOf:a.asOf,quantity:a.quantity,unit:a.unit,security:a.security?.key,cost:a.investment?.cost,unrealized:a.investment?.profit})); context.holdingsTruncated = state.assets.length > 100; }
-  if(pageData)context.pageData=automaticPageContext(pageData);
+  if(pageData&&onDemand){
+    for(const key of ['holdings','holdingsTruncated','debts','insurance','upcoming'])delete context[key];
+    context.pageData={capturedAt:pageData.capturedAt,revision:pageData.revision,directory:Object.entries(pageData.pages).map(([page,data])=>({page,sections:Object.keys(data)})),instruction:'按问题使用 get_page_data 读取所需栏目与记录；完整明细保存在本地。'};
+  }else if(pageData){
+    const {capturedAt,revision,pages}=pageData;
+    context.pageData={capturedAt,revision,assetCount:pages.assets.assets.length,watchCount:pages.assets.fundWatchlist?.length??0,report:pages.reports.reports[0]?.day??null,valuation:pages.dashboard.valuation,calendar:pages.cashflow.calendarSummary,instruction:'当前仅提供摘要。工具关闭时无法继续读取明细。'};
+  }
   return context;
 }
 
@@ -185,7 +191,7 @@ export function financialTools(state,services={},pageData=null) {
   const resultTool=(name,label,description,parameters,execute)=>({name,label,description,parameters,execute:async(_id,args)=>{const output=await execute(args);return {content:[{type:'text',text:JSON.stringify(output)}],details:output};}});
   if(services.getMarketData)tools.push(resultTool('get_market_data','读取市场数据','按需读取港股或美国最近完整交易日的指数、行业表现和每日简报；只有已授权时含个人持仓。date可指定已有历史日期YYYY-MM-DD，未填使用最近完整交易日。休市不得声称昨日发生交易；不查询新闻。',Type.Object({market:Type.Union(['US','HK'].map(Type.Literal)),date:Type.Optional(Type.String({pattern:'^\\d{4}-\\d{2}-\\d{2}$'}))},{additionalProperties:false}),services.getMarketData));
   if(services.getStockQuote)tools.push(resultTool('get_stock_quote','读取股票报价','按市场和代码读取本地缓存或按需请求行情，不读券商账户或交易。只给名称时可传query搜索；多个候选时先确认代码。返回实际报价时间，不保证实时。',Type.Object({market:Type.Union(['US','HK','SH','SZ'].map(Type.Literal)),symbol:Type.Optional(Type.String({maxLength:20})),query:Type.Optional(Type.String({maxLength:80}))},{additionalProperties:false}),services.getStockQuote));
-  if(pageData)tools.push(resultTool('get_page_data','读取页面资料','直接读取用户已授权的全部页面业务数据，包含完整资产、成本、收支、纪律、宏观指标、行业、行情历史和日报。page 使用目录中的页面编号；section 选择页面栏目，不填返回该页所有栏目。列表支持 offset/limit 分页，assetId/date 可筛选记录。没有额外外网搜索，不修改账本。',Type.Object({page:Type.Union(Object.keys(PAGE_NAMES).map(Type.Literal)),section:Type.Optional(Type.String({maxLength:40})),offset:Type.Optional(Type.Integer({minimum:0})),limit:Type.Optional(Type.Integer({minimum:1,maximum:100})),assetId:Type.Optional(Type.String({maxLength:100})),date:Type.Optional(Type.String({pattern:'^\\d{4}-\\d{2}-\\d{2}$'}))},{additionalProperties:false}),args=>readAssistantPage(pageData,args)));
+  if(pageData)tools.push(resultTool('get_page_data','读取页面资料','直接读取用户已授权的全部页面业务数据，包含完整资产、成本、收支、纪律、宏观指标、行业、行情历史和日报。page 使用目录中的页面编号；section 选择页面栏目，不填返回该页所有栏目。列表支持 offset/limit 分页，assetId/date 可筛选记录。没有额外外网搜索，不修改账本。',Type.Object({page:Type.Union(Object.keys(PAGE_NAMES).map(Type.Literal)),section:Type.Optional(Type.String({maxLength:40})),offset:Type.Optional(Type.Integer({minimum:0})),limit:Type.Optional(Type.Integer({minimum:1,maximum:100})),account:Type.Optional(Type.String({maxLength:100,description:'资产列表的账户名称；流水用 assetId 筛选现金或证券账户'})),status:Type.Optional(Type.String({maxLength:20})),from:Type.Optional(Type.String({maxLength:10})),to:Type.Optional(Type.String({maxLength:10})),assetId:Type.Optional(Type.String({maxLength:100})),date:Type.Optional(Type.String({pattern:'^\\d{4}-\\d{2}-\\d{2}$'}))},{additionalProperties:false}),args=>readAssistantPage(pageData,args,services.ledgerPage)));
   if(services.getInstrumentDetails)tools.push(resultTool('get_instrument_details','读取估值与股息','读取页面相同的股票 PE、PB、股息率、每股股息、市值等基础资料及已保存的走势图数据。已登记股票同时返回 marketData 行情摘要，完整点列通过 get_page_data 的 instruments 页面 stockMinutes／stockHistory 分页读取，保留原币、来源时间和延迟状态。基金返回已缓存的目标ETF／同指数参考ETF行情摘要，完整分时和日线可通过 get_page_data 的 instruments 页面 referenceMinutes／referenceHistory 分页读取；参考ETF市价不是基金净值。传 assetId 读取已登记股票或基金；也可传完整股票 key，如 US.GOOG。没有的数据明确返回不可用，不编造基本面。',Type.Object({assetId:Type.Optional(Type.String({maxLength:100})),key:Type.Optional(Type.String({maxLength:30}))},{additionalProperties:false}),services.getInstrumentDetails));
   const writeResult=fn=>async args=>{
     let result,input=args;
@@ -324,7 +330,7 @@ export async function openAssistantRun(config,state,question,{history=[],service
     }
     return {output:result.content,details:result.details};
   }}));
-  registry.install(defineExtension({name:'finance',tools,sections:[section('finance-snapshot',()=>systemPrompt+'\n工具执行在界面中只显示小提示，正文不要报告工具名称、参数、JSON或技术过程；直接回答结果和需要用户确认的事项。'+(services.recordHoldingChange?'\n用户已开启本地自然语言记账。先识别记录类型：已发生的买卖使用 record_holding_change；按最新总份额／总股数更新持仓使用 set_holding_balance。持仓校准的 quantity 必须是用户给出的总数量，单位成本和现金变化各自按原话登记；不得将新旧份额差额当成买入，不得从差额编造缺失交易、要求补买入日期或推算应扣现金。标的在已有持仓中唯一匹配时不要重复确认标的。“全部卖了”“都卖了”“卖光了”表示卖出该持仓全部已登记份额，调用 record_holding_change 时 side=sell，省略 amount 和 quantity，由服务端读取，不追问页面已有的总份额或把估值当成交款。用户记录已经发生的买卖时优先记账，不启动新买入建议或资金规划，不把仓位纪律当作拒绝记录已发生事实的原因。用户明确要求删除持仓记录或移除自选基金时使用 remove_instrument；删除不代表卖出，不增加现金。两处都明确要求删除时分别调用 holding 和 watchlist；范围不明交给工具追问并承接补答，不要声称没有删除工具或让用户去页面手动处理。只有明确已发生或明确要求登记的买卖/收支才使用 record_holding_change / record_cash_flow；想买、建议、假设或举例都不入账。买入时未说明资金来源，必须先问“用现有现金，还是额外投入”，等回答后再入账；用户已说明则不要重复问。后续补答日期（如“今天买的”）、资金来源、清仓范围（如“全部，然后变成 cash”）或标的（如“南方啊”）时，承接紧邻的同一笔未完成买卖；evidence 引用完整原始买卖指令或本轮补答，由服务端合并核对，不要求用户重说整句。只继承用户原话，不把助手补写的金额或代码当成用户指令。遇到 needs_information 或明确的工具校验失败，先核对是否只是工具参数与已确认原话不一致；能按原话纠正就纠正，确实缺信息则只问当前最关键的缺项并等待补答。不要反复换写 evidence 重试，不要让用户把已经确认的标的、金额和日期再说一遍，也不要用“系统只认当前这句”把补答流程推回给用户。返回 use_other_tool 时切换到指定工具，不向用户索要重复确认。卖出通常回到明确的现金账户，红包是独立现金收入，不能重复计算。只有工具实际返回 pending 并保存待入账凭据后，才能承诺净值披露后自动处理；needs_information 表示尚未保存待入账，不能把口头承诺当作已排队。当前已有完整买卖指令时，evidence 原样使用当前句，不再拼接旧对话。pending 仅为待入账，持仓、成本和现金都尚未更新，不能声称已扣现金、增加持仓或成本；场外基金等待当天披露净值，不用昨日净值或盘中价冒充收盘。按价格估算数量要标明估算，未知旧成本不补零。记录只改变本地账本，不会向券商发单。成功结果后以返回的余额、数量和新版本为准。':'' )+(authorizedPages?'\n用户已授权读取所有页面业务资料。pageData 含完整当前档案和所有页面的数据目录；优先使用已给出的数据，历史曲线、归档或更详细栏目使用 get_page_data，股票估值与股息更新使用 get_instrument_details。不要让用户重复提供页面上已有的资料。marketReference 是独立 ETF 的市场参考，不得当成该基金的净值、成交价或用户持仓收益，也不得据此改写份额、成本或现金。marketData 为股票市场行情，不代表用户实际持仓收益；成交量没有主动买卖方向，量柱红蓝只表示相邻价格涨跌，不得说成主动买量或卖量。':'')+'\n当前已授权财务快照（JSON 数据）：\n'+JSON.stringify(contextForAI(snapshot,null,config.includeHoldings,authorizedPages)),{tag:false})]}));
+  registry.install(defineExtension({name:'finance',tools,sections:[section('finance-snapshot',()=>systemPrompt+'\n工具执行在界面中只显示小提示，正文不要报告工具名称、参数、JSON或技术过程；直接回答结果和需要用户确认的事项。'+(services.recordHoldingChange?'\n用户已开启本地自然语言记账。先识别记录类型：已发生的买卖使用 record_holding_change；按最新总份额／总股数更新持仓使用 set_holding_balance。持仓校准的 quantity 必须是用户给出的总数量，单位成本和现金变化各自按原话登记；不得将新旧份额差额当成买入，不得从差额编造缺失交易、要求补买入日期或推算应扣现金。标的在已有持仓中唯一匹配时不要重复确认标的。“全部卖了”“都卖了”“卖光了”表示卖出该持仓全部已登记份额，调用 record_holding_change 时 side=sell，省略 amount 和 quantity，由服务端读取，不追问页面已有的总份额或把估值当成交款。用户记录已经发生的买卖时优先记账，不启动新买入建议或资金规划，不把仓位纪律当作拒绝记录已发生事实的原因。用户明确要求删除持仓记录或移除自选基金时使用 remove_instrument；删除不代表卖出，不增加现金。两处都明确要求删除时分别调用 holding 和 watchlist；范围不明交给工具追问并承接补答，不要声称没有删除工具或让用户去页面手动处理。只有明确已发生或明确要求登记的买卖/收支才使用 record_holding_change / record_cash_flow；想买、建议、假设或举例都不入账。买入时未说明资金来源，必须先问“用现有现金，还是额外投入”，等回答后再入账；用户已说明则不要重复问。后续补答日期（如“今天买的”）、资金来源、清仓范围（如“全部，然后变成 cash”）或标的（如“南方啊”）时，承接紧邻的同一笔未完成买卖；evidence 引用完整原始买卖指令或本轮补答，由服务端合并核对，不要求用户重说整句。只继承用户原话，不把助手补写的金额或代码当成用户指令。遇到 needs_information 或明确的工具校验失败，先核对是否只是工具参数与已确认原话不一致；能按原话纠正就纠正，确实缺信息则只问当前最关键的缺项并等待补答。不要反复换写 evidence 重试，不要让用户把已经确认的标的、金额和日期再说一遍，也不要用“系统只认当前这句”把补答流程推回给用户。返回 use_other_tool 时切换到指定工具，不向用户索要重复确认。卖出通常回到明确的现金账户，红包是独立现金收入，不能重复计算。只有工具实际返回 pending 并保存待入账凭据后，才能承诺净值披露后自动处理；needs_information 表示尚未保存待入账，不能把口头承诺当作已排队。当前已有完整买卖指令时，evidence 原样使用当前句，不再拼接旧对话。pending 仅为待入账，持仓、成本和现金都尚未更新，不能声称已扣现金、增加持仓或成本；场外基金等待当天披露净值，不用昨日净值或盘中价冒充收盘。按价格估算数量要标明估算，未知旧成本不补零。记录只改变本地账本，不会向券商发单。成功结果后以返回的余额、数量和新版本为准。':'' )+(authorizedPages?'\n用户已授权读取所有页面业务资料。pageData 给出页面目录。优先用摘要回答，按需用 get_page_data 读取所需明细；工具关闭时使用已提供的资料，股票估值与股息更新使用 get_instrument_details。不要让用户重复提供页面上已有的资料。marketReference 是独立 ETF 的市场参考，不得当成该基金的净值、成交价或用户持仓收益，也不得据此改写份额、成本或现金。marketData 为股票市场行情，不代表用户实际持仓收益；成交量没有主动买卖方向，量柱红蓝只表示相邻价格涨跌，不得说成主动买量或卖量。':'')+'\n当前已授权财务快照（JSON 数据）：\n'+JSON.stringify(contextForAI(snapshot,null,config.includeHoldings,authorizedPages,config.useTools!==false)),{tag:false})]}));
   harness=await Harness.open(storage,{models,registry,identity:{attribution:null},settings:{toolExecution:'sequential',retry:{enabled:false},compaction:{enabled:false},progress:{partialIntervalMs:25,outputIntervalMs:25}}},context);
   root=await harness.root(context,{agent:{model:{provider:model.provider,modelId:model.id}},init:async(tx,id)=>{
     await tx.doc(RunLimits,id);

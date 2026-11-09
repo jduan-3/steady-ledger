@@ -1,7 +1,9 @@
 import { isoDay, marketDay } from './securities.mjs';
 
 export const NASDAQ_MONTHLY_CACHE = 'nasdaq_monthly';
-export const NASDAQ_MONTHLY_URL = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=us.IXIC,month,,,42,qfq';
+// The index needs no split adjustment. The adjusted-stock endpoint can reject
+// this request even while Tencent's ordinary index K-line endpoint is available.
+export const NASDAQ_MONTHLY_URL = 'https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=us.IXIC,month,,,42';
 const pending = new WeakMap();
 const previousMonth = period => {
   const [year,month]=period.split('-').map(Number);

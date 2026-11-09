@@ -8,6 +8,7 @@ import { applyFundNAV } from './funds.mjs';
 import { applyStockPrices } from './market.mjs';
 import { isoDay } from './securities.mjs';
 import { inferredCostBasis, applyInvestmentInfo } from './investments.mjs';
+import { financialSnapshot, monthlyBridge } from './planning.mjs';
 import { incomePlan } from './income.mjs';
 
 export function openStore(directory) {
@@ -50,6 +51,16 @@ export function openStore(directory) {
     }
     db.exec('COMMIT');
   } catch(error){db.exec('ROLLBACK');throw error;}
+  db.exec(`BEGIN IMMEDIATE;
+    CREATE TABLE IF NOT EXISTS ledger_versions(seq INTEGER PRIMARY KEY,id TEXT NOT NULL,payload TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ledger_versions_id ON ledger_versions(id,seq);
+    INSERT INTO ledger_versions(id,payload) SELECT id,payload FROM ledger_entries WHERE NOT EXISTS(SELECT 1 FROM ledger_versions);
+    CREATE TRIGGER IF NOT EXISTS ledger_insert_version AFTER INSERT ON ledger_entries BEGIN
+      INSERT INTO ledger_versions(id,payload) VALUES(NEW.id,NEW.payload); END;
+    CREATE TRIGGER IF NOT EXISTS ledger_update_version AFTER UPDATE ON ledger_entries WHEN OLD.payload<>NEW.payload BEGIN
+      INSERT INTO ledger_versions(id,payload) VALUES(NEW.id,NEW.payload); END;
+    COMMIT;`);
+  const ledgerCursor=()=>db.prepare('SELECT coalesce(max(seq),0) AS n FROM ledger_versions').get().n;
   const getKV = (key, fallback = null) => { const row = db.prepare('SELECT value FROM kv WHERE key=?').get(key); return row ? JSON.parse(row.value) : fallback; };
   const setKV = (key, value) => db.prepare('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   if (!getKV('state')) setKV('state', initialState());
@@ -74,15 +85,16 @@ export function openStore(directory) {
     const q=getKV('fund_nav:'+a.fund.code);
     if(q){if(q.previous)recordPrice('FUND.'+a.fund.code,{...q.previous,code:a.fund.code,currency:'CNY',basis:'unit_nav',source:q.source});recordPrice('FUND.'+a.fund.code,q);}
   }
-  const history = () => db.prepare('SELECT payload FROM history ORDER BY day DESC LIMIT 30').all().map(r => JSON.parse(r.payload)).reverse();
-  const snapshot = (s, day=nowDate(s.preferences.timeZone)) => { const m = calculate(s); db.prepare('INSERT INTO history(day,payload) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day, JSON.stringify({ day, netWorth: m.netWorth, totalAssets: m.totalAssets, debt: m.totalDebt, revision: s.revision, complete: m.complete })); };
-  const persistState=(next,current,label,day)=>{
-    db.prepare('INSERT INTO audit(created_at,label,state) VALUES(?,?,?)').run(new Date().toISOString(),label,JSON.stringify(current));
-    setKV('state',next);snapshot(project(next),day);
+  const history = () => db.prepare('SELECT payload FROM history ORDER BY day DESC LIMIT 30').all().map(r => {const {positions,rates,ledgerCursor,credits,...summary}=JSON.parse(r.payload);return summary;}).reverse();
+  const snapshot = (s, day=nowDate(s.preferences.timeZone)) => { const m = calculate(s); db.prepare('INSERT INTO history(day,payload) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day, JSON.stringify({...financialSnapshot(s,m,day),ledgerCursor:ledgerCursor(),credits:getKV('income_credits',[]).filter(c=>c.period>=day.slice(0,7)||c.postedAt?.slice(0,7)>=day.slice(0,7))})); };
+  const persistState=(next,current,label)=>{
+    const auxiliary={cursor:ledgerCursor(),credits:getKV('income_credits',[])};
+    db.prepare('INSERT INTO audit(created_at,label,state) VALUES(?,?,?)').run(new Date().toISOString(),label,JSON.stringify({...current,_restore:auxiliary}));
+    setKV('state',next);
     db.prepare('DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 100)').run();
   };
   const ledgerGeneration = () => getKV('ledger_generation',0);
-  const save = (input, expectedRevision, label = '更新财务档案', { reset = false } = {}) => {
+  const save = (input, expectedRevision, label = '更新财务档案', { reset = false, restore = null } = {}) => {
     db.exec('BEGIN IMMEDIATE');
     try {
       const current = state({ raw: true });
@@ -93,11 +105,30 @@ export function openStore(directory) {
         if (prev) { a.value = prev.quantity === a.quantity ? prev.value : null; a.asOf = prev.asOf; }
       }
       persistState(next,current,label);
+      if(restore){
+        const previousStatuses=restore.auxiliary?new Map(db.prepare(`
+          SELECT v.id,json_extract(v.payload,'$.status') status FROM ledger_versions v
+          JOIN (SELECT max(seq) seq FROM ledger_versions WHERE seq<=? GROUP BY id) latest ON latest.seq=v.seq
+        `).all(restore.auxiliary.cursor).map(r=>[r.id,r.status])):null;
+        for(const row of db.prepare('SELECT payload FROM ledger_entries').all()){
+          const entry=JSON.parse(row.payload);
+          const active=previousStatuses?previousStatuses.get(entry.id)==='applied':entry.revision<=input.revision;
+          if(entry.status==='applied'&&!active)Object.assign(entry,{status:'reversed',restoredAtRevision:next.revision,message:'恢复历史版本时冲回'});
+          else if(entry.status==='reversed'&&active&&previousStatuses)Object.assign(entry,{status:'applied',restoredAtRevision:next.revision,message:'随历史版本恢复入账'});
+          else if(entry.status==='pending'&&previousStatuses?.get(entry.id)==='pending')entry.generation=ledgerGeneration()+1;
+          else if(entry.status==='pending')Object.assign(entry,{status:'blocked',message:'账本已恢复，请重新核对后登记'});
+          else continue;
+          db.prepare('UPDATE ledger_entries SET payload=? WHERE id=?').run(JSON.stringify(entry),entry.id);
+        }
+        setKV('ledger_generation',ledgerGeneration()+1);
+        setKV('income_credits',restore.auxiliary?.credits??getKV('income_credits',[]).filter(c=>c.postedAt<restore.at));
+      }
       if(reset){
         setKV('ledger_generation',ledgerGeneration()+1);
         db.prepare("UPDATE ledger_entries SET payload=json_set(payload,'$.status','cancelled','$.message','财务档案已清空，旧待入账记录已取消') WHERE json_extract(payload,'$.status')='pending'").run();
         setKV('income_credits',[]);
       }
+      snapshot(state());
       db.exec('COMMIT');
       return next;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -112,18 +143,50 @@ export function openStore(directory) {
       cash.value=Math.round((cash.value+amount)*100)/100;cash.asOf=day;
       next.profile.autoIncome.lastPeriod=plan.due.at(-1).period;next.revision=current.revision+1;
       const validated=validateState(next);
-      const receipts=plan.due.map(item=>({period:item.period,dueDate:item.date,amount:item.amount,assetId:item.assetId,postedAt:now.toISOString()}));
-      persistState(validated,current,`工资自动入账 · ${receipts.map(r=>r.period).join('、')} · ${amount.toLocaleString('zh-CN')} 元`.slice(0,100),day);
+      const receipts=plan.due.map(item=>({period:item.period,dueDate:item.date,amount:item.amount,assetId:item.assetId,postedAt:now.toISOString(),revision:next.revision}));
+      persistState(validated,current,`工资自动入账 · ${receipts.map(r=>r.period).join('、')} · ${amount.toLocaleString('zh-CN')} 元`.slice(0,100));
       setKV('income_credits',[...credits,...receipts]);
+      snapshot(project(validated),day);
       db.exec('COMMIT');return {...incomePlan(validated,[...credits,...receipts],now),posted:receipts.length,totalAmount:amount};
     }catch(error){db.exec('ROLLBACK');throw error;}
   };
   const incomeStatus=(now=new Date())=>{const credits=getKV('income_credits',[]);return {...incomePlan(state({raw:true}),credits,now),credits:credits.slice(-12).reverse()};};
   const ledgerEntry=id=>{const row=db.prepare('SELECT payload FROM ledger_entries WHERE id=?').get(id);return row?JSON.parse(row.payload):null;};
   const ledgerEntries=({pending=false,limit=50}={})=>db.prepare("SELECT payload FROM ledger_entries"+(pending?" WHERE json_extract(payload,'$.status')='pending'":'')+" ORDER BY json_extract(payload,'$.createdAt') DESC,rowid DESC LIMIT ?").all(limit).map(row=>JSON.parse(row.payload));
-  const postLedgerEntry=(entry,transition)=>{
+  const ledgerPage=({id,status,assetId,date,from,to,offset=0,limit=25}={},cursor=null)=>{
+    offset=Number(offset);limit=Number(limit);
+    if(!Number.isSafeInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Error('流水分页参数无效');
+    const conditions=[],params=[];
+    for(const [value,expression] of [[status,"json_extract(payload,'$.status')=?"],[date,"json_extract(payload,'$.date')=?"],[from,"json_extract(payload,'$.date')>=?"],[to,"json_extract(payload,'$.date')<=?"]]){
+      if(value){conditions.push(expression);params.push(value);}
+    }
+    if(id){conditions.push("json_extract(payload,'$.id')=?");params.push(id);}
+    if(assetId){conditions.push("(json_extract(payload,'$.asset.id')=? OR json_extract(payload,'$.cashAssetId')=?)");params.push(assetId,assetId);}
+    const where=conditions.length?' WHERE '+conditions.join(' AND '):'';
+    const table=cursor==null?'ledger_entries':"(SELECT v.payload,v.seq AS rowid FROM ledger_versions v JOIN (SELECT max(seq) seq FROM ledger_versions WHERE seq<=? GROUP BY id) latest ON latest.seq=v.seq)";
+    if(cursor!=null)params.unshift(cursor);
+    const total=db.prepare('SELECT count(*) AS n FROM '+table+where).get(...params).n;
+    const rows=db.prepare("SELECT payload FROM "+table+where+" ORDER BY json_extract(payload,'$.createdAt') DESC,rowid DESC LIMIT ? OFFSET ?").all(...params,limit,offset);
+    return {items:rows.map(r=>JSON.parse(r.payload)),total,offset,limit,nextOffset:offset+limit<total?offset+limit:null};
+  };
+  const snapshotOn=day=>JSON.parse(db.prepare('SELECT payload FROM history WHERE day=?').get(day)?.payload||'null');
+  const monthSummary=(month=nowDate(state().preferences.timeZone).slice(0,7))=>{
+    if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw new Error('月份无效');
+    const start=month+'-01',baseline=db.prepare('SELECT payload FROM history WHERE day<? ORDER BY day DESC LIMIT 1').get(start);
+    const rows=db.prepare("SELECT payload FROM history WHERE substr(day,1,7)=? ORDER BY day").all(month).map(r=>JSON.parse(r.payload));
+    const base=baseline?JSON.parse(baseline.payload):null,last=rows.at(-1);
+    let entries=[];
+    if(base&&last){
+      const table=last.ledgerCursor==null?'ledger_entries':'(SELECT v.payload FROM ledger_versions v JOIN (SELECT max(seq) seq FROM ledger_versions WHERE seq<=? GROUP BY id) t ON t.seq=v.seq)';
+      const args=last.ledgerCursor==null?[]:[last.ledgerCursor];
+      entries=db.prepare("SELECT payload FROM "+table+" WHERE json_extract(payload,'$.revision') BETWEEN ? AND ?").all(...args,base.revision+1,last.revision).map(r=>JSON.parse(r.payload));
+    }
+    return monthlyBridge(month,base,rows,entries,last?.credits||getKV('income_credits',[]));
+  };
+  const postLedgerEntry=(entry,transition,check)=>{
     db.exec('BEGIN IMMEDIATE');
     try{
+      check?.();
       const existing=ledgerEntry(entry.id);
       if(existing&&existing.signature!==entry.signature)throw new Error('本轮已登记过这项资产的另一笔变动，请另发一条消息记录新变动');
       if(existing&&existing.status!=='pending'){db.exec('COMMIT');return {...existing,replayed:true};}
@@ -135,12 +198,23 @@ export function openStore(directory) {
         else result={...result,...change.receipt};
       }
       db.prepare('INSERT INTO ledger_entries VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(result.id,JSON.stringify(result));
+      if(result.status==='applied')snapshot(state());
       db.exec('COMMIT');return result;
     }catch(error){db.exec('ROLLBACK');throw error;}
   };
   const config = ({ secret = false } = {}) => {
     const value = { baseUrl: '', model: '', apiKey: '', consent: false, includeHoldings: false, includePageData: false, allowLedgerWrites: false, includeHistory: true, useTools: true, autoReport: false, marketBriefsAI: false, requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS, ...getKV('ai', {}) };
     return { ...value, apiKey: secret && value.apiKey ? decrypt(value.apiKey) : '', hasKey: Boolean(value.apiKey) };
+  };
+  const archivedReport=row=>{
+    if(!row)return null;
+    const report=JSON.parse(row.payload);
+    if(report.changes==null||Object.hasOwn(report,'changeReason'))return report;
+    const prior=db.prepare('SELECT payload FROM history WHERE day<? ORDER BY day DESC LIMIT 1').get(report.day);
+    if(report.metrics?.complete!==true||!prior||JSON.parse(prior.payload).complete!==true){
+      report.changes=null;report.changeReason='旧日报缺少可核实的完整对比估值';
+    }
+    return report;
   };
   const conversation = id => db.prepare('SELECT * FROM conversations WHERE id=?').get(id) || null;
   const latestConversation = scope => db.prepare('SELECT * FROM conversations WHERE scope_id=? ORDER BY updated_at DESC,rowid DESC LIMIT 1').get(scope||'') || null;
@@ -151,11 +225,11 @@ export function openStore(directory) {
   };
   const messages = id => db.prepare('SELECT * FROM messages'+(id?' WHERE conversation_id=?':'')+' ORDER BY created_at,rowid').all(...(id?[id]:[])).map(m=>({...m,metadata:JSON.parse(m.metadata)}));
   return {
-    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,ledgerEntry,ledgerEntries,postLedgerEntry,ledgerGeneration,
+    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,ledgerEntry,ledgerEntries,ledgerPage,ledgerCursor,snapshotOn,monthSummary,postLedgerEntry,ledgerGeneration,
     reset(expectedRevision){return save(initialState(),expectedRevision,'清空财务档案（可从历史恢复）',{reset:true});},
     cancelLedgerEntry(id){const entry=ledgerEntry(id);if(!entry||entry.status!=='pending')throw new Error('只能取消尚未入账的记录');return postLedgerEntry(entry,()=>({receipt:{status:'cancelled'}}));},
     audit: () => db.prepare('SELECT id,created_at,label FROM audit ORDER BY id DESC LIMIT 20').all(),
-    undo: (id, revision) => { const row = db.prepare('SELECT state FROM audit WHERE id=?').get(id); if (!row) throw new Error('找不到该历史版本'); return save(JSON.parse(row.state), revision, '恢复历史版本'); },
+    undo: (id, revision) => { const row = db.prepare('SELECT state,created_at FROM audit WHERE id=?').get(id); if (!row) throw new Error('找不到该历史版本'); const target=JSON.parse(row.state);return save(target, revision, '恢复历史版本',{restore:{auxiliary:target._restore,at:row.created_at}}); },
     config,
     saveConfig: (input) => {
       const prev = config({ secret: true });
@@ -174,12 +248,12 @@ export function openStore(directory) {
       setKV('ai', value); return config();
     },
     setConnection: (scopeId, connection) => { const value = getKV('ai', {}); if (value.scopeId === scopeId) { value.connection = { ...connection, checkedAt: new Date().toISOString() }; setKV('ai', value); } return config(); },
-    reports: () => db.prepare('SELECT payload FROM reports ORDER BY day DESC LIMIT 60').all().map(r => JSON.parse(r.payload)),
-    report: (day) => { const row = db.prepare('SELECT payload FROM reports WHERE day=?').get(day); return row ? JSON.parse(row.payload) : null; },
+    reports: () => db.prepare('SELECT payload FROM reports ORDER BY day DESC LIMIT 60').all().map(archivedReport),
+    report: day=>archivedReport(db.prepare('SELECT payload FROM reports WHERE day=?').get(day)),
     generateReport: (s, { late = false } = {}) => {
       const day = nowDate(s.preferences.timeZone), metrics = calculate(s), prior = history().filter(h => h.day < day).at(-1);
       const report = { day, generatedAt: new Date().toISOString(), late, revision: s.revision, isDemo: s.isDemo, metrics, rules: evaluate(s, metrics),
-        changes: prior ? metrics.netWorth - prior.netWorth : null, changeLabel: '估值差额，包含出入金及修正，不代表投资收益', aiText: null };
+        changeReason: !prior?'尚无更早的已登记快照':!metrics.complete?'当前估值待补充：'+metrics.missing.join('、'):prior.complete!==true?'上期估值不完整'+(prior.missing?.length?'：'+prior.missing.join('、'):'，无法比较'):null, changes: prior?.complete===true && metrics.complete ? metrics.netWorth - prior.netWorth : null, changeLabel: '估值差额，包含出入金及修正，不代表投资收益', aiText: null };
       snapshot(s); db.prepare('INSERT INTO reports(day,payload) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day, JSON.stringify(report)); return report;
     },
     updateReport: r => db.prepare('UPDATE reports SET payload=? WHERE day=?').run(JSON.stringify(r), r.day),

@@ -8,6 +8,8 @@ import { validateState, calculate, evaluate, demoState, parseCSV, CSV_HEADER, no
 import { openStore } from './store.mjs';
 import { validateConfig, explain, requireAI, testConnection } from './ai.mjs';
 import { refreshFundNAV, watchedFundAsset, searchFunds } from './funds.mjs';
+import { cashCalendar } from './planning.mjs';
+import { reconcile } from './reconciliation.mjs';
 import { dailyValuation } from './valuation.mjs';
 import { searchSecurities, refreshStocks, refreshFX } from './market.mjs';
 import { security } from './securities.mjs';
@@ -43,7 +45,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
     if(id&&!thread)throw Object.assign(new Error('对话不存在或已删除'),{status:404});
     return {conversation:thread,conversations:store.conversations(),messages:thread?store.messages(thread.id):[]};
   };
-  const view = () => { const state = store.state(), metrics = calculate(state), history = store.history(); return { state, metrics, rules: evaluate(state, metrics), history, valuation: dailyValuation(state, metrics, history), incomeSchedule:store.incomeStatus(),ledgerEntries:store.ledgerEntries(), config: store.config(), reports: store.reports(), marketBriefs:readMarketBriefs(store), ...chatView(), chatRun:assistantRuns.view(), audit: store.audit(), avatarUrl:avatarUrl() }; };
+  const view = () => { const state = store.state(), metrics = calculate(state), history = store.history(); return { state, metrics, rules: evaluate(state, metrics), history, valuation: dailyValuation(state, metrics, history), incomeSchedule:store.incomeStatus(),ledgerEntries:store.ledgerEntries(),pendingEntries:store.ledgerEntries({pending:true,limit:-1}), config: store.config(), reports: store.reports(), marketBriefs:readMarketBriefs(store), ...chatView(), chatRun:assistantRuns.view(), audit: store.audit(), avatarUrl:avatarUrl() }; };
   const authenticated = req => {
     if (disableAuth) return true;
     const token = req.headers.cookie?.split(';').map(s => s.trim()).find(x => x.startsWith('balance_session='))?.slice('balance_session='.length);
@@ -58,7 +60,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
   let pendingMarkets = null;
   const updateMarkets = (options={}) => pendingMarkets || (pendingMarkets=refreshMarketOverview(store,options).then(result=>{saveMarketBriefs(store);return result;}).finally(()=>{pendingMarkets=null;}));
   const ledger=createLedgerService(store);
-  const assistantServices=(config,meta,control)=>({...createAssistantServices(store,{refreshOverview:updateMarkets,includeHoldings:config.includeHoldings||config.includePageData,includePageData:config.includePageData}),...(meta&&config.allowLedgerWrites?{...ledger.bind(meta,control),refreshLedgerContext:()=>({state:store.state(),pageData:config.includePageData?buildAssistantData(store):null}),ledgerWasChanged:()=>store.ledgerEntries({limit:5000}).some(e=>e.requestId===meta.requestId&&e.status==='applied')}:{} )});
+  const assistantServices=(config,meta,control)=>({ledgerPage:store.ledgerPage,...createAssistantServices(store,{refreshOverview:updateMarkets,includeHoldings:config.includeHoldings||config.includePageData,includePageData:config.includePageData}),...(meta&&config.allowLedgerWrites?{...ledger.bind(meta,control),refreshLedgerContext:()=>({state:store.state(),pageData:config.includePageData?buildAssistantData(store,store.state(),{indexedLedger:true}):null}),ledgerWasChanged:()=>store.ledgerEntries({limit:5000}).some(e=>e.requestId===meta.requestId&&e.status==='applied')}:{} )});
   let pendingLedger=null;
   const assistantRuns=createAssistantRuns(store,{dataDir,services:assistantServices});
   const marketView=market=>({...marketOverview(store,market),brief:readMarketBriefs(store,{market}).latest.find(b=>b.market===market)||null});
@@ -126,6 +128,11 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
         if (path === '/api/bootstrap' && req.method === 'GET') return json(res, view());
         if (path === '/api/markets/cn' && req.method === 'GET') return json(res,cnMarketOverview(store));
         if (path === '/api/markets/cn/refresh' && req.method === 'POST') { await body(req);return json(res,await refreshCNMarket(store)); }
+        if(path==='/api/ledger/entries'&&req.method==='GET')return json(res,store.ledgerPage(Object.fromEntries(url.searchParams)));
+        if(path==='/api/ledger/reconcile'&&req.method==='POST')return json(res,reconcile(store,await body(req)));
+        if(path==='/api/plans/execute'&&req.method==='POST')return json(res,await ledger.executePlan(await body(req)));
+        if(path==='/api/planning/calendar'&&req.method==='GET')return json(res,cashCalendar(store.state(),{includePlans:url.searchParams.get('plans')==='1'}));
+        if(path==='/api/reports/month'&&req.method==='GET')return json(res,store.monthSummary(url.searchParams.get('month')||undefined));
         if(path==='/api/ledger/entries'&&req.method==='DELETE'){const {id}=await body(req);store.cancelLedgerEntry(id);return json(res,view());}
         if (path === '/api/markets/watchboard' && req.method === 'GET') return json(res,watchboard(store,{mode:url.searchParams.get('mode')||'latest'}));
         if (path === '/api/markets/watchboard/refresh' && req.method === 'POST') { const input=await body(req);return json(res,await refreshWatchboard(store,{mode:input.mode||'latest'})); }

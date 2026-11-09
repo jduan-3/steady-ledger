@@ -19,7 +19,7 @@ function componentHarness(fetch) {
   const nodes=new Map(),listeners={};
   const node=()=>({innerHTML:'',textContent:'',classList:{add(){},remove(){}},addEventListener(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});
   class Form {constructor(id,fields){this.actualId=id;this.id={name:'id'};this.fields=fields;} getAttribute(){return this.actualId;} querySelectorAll(){return [];} }
-  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,updateReferenceChartCursor,stockMarketHTML,cnMarketPageHTML,etfFlowsPageHTML,setTimeout:()=>0,clearTimeout(){}});
+  const context=vm.createContext({document:{querySelector(selector){if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);},addEventListener(name,handler){listeners[name]=handler;}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#assistant'},HTMLFormElement:Form,FormData:class extends Map{constructor(form){super(form.fields);}},crypto:webcrypto,structuredClone,fetch,AbortController,readEventStream,marketPageHTML,marketBriefsHTML,monthlyPageHTML,watchboardPageHTML,watchboardGroupsHTML,watchboardQuoteHTML,watchboardCopyText,fundReferenceHTML,updateReferenceChartCursor,stockMarketHTML,cnMarketPageHTML,etfFlowsPageHTML,setInterval:()=>0,setTimeout:()=>0,clearTimeout(){}});
   vm.runInContext(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/\nstart\(\);\s*$/,''),context);
   const state=validateState(initialState());
   context.fixture={state,metrics:calculate(state),rules:evaluate(state),history:[],reports:[],messages:[],audit:[],config:{baseUrl:'',model:'',consent:false}};
@@ -47,8 +47,8 @@ test('私人助手称呼在页面与背景表单一致，保存后可修改或�
 });
 test('保险估值允许留空，表单编号同名字段不阻断实际保存，保费字段进入账本',async()=>{
   let received;const h=componentHarness(async(url,options)=>{received={url,body:JSON.parse(options.body)};return {ok:true,json:async()=>({...h.context.fixture,state:received.body.state,metrics:calculate(received.body.state),rules:evaluate(received.body.state)})};});
-  h.run("data.state.assets=[{id:'policy',name:'保单',type:'insurance',currency:'CNY',value:null,asOf:'2026-10-23',inPool:false,insurance:{premiumFrequency:'yearly'}}];assetDialog('policy');");
-  const dialog=h.nodes.get('#dialog').innerHTML;assert.ok(!dialog.match(/<input name="value"[^>]*required/));assert.match(dialog,/name="sumAssured"/);
+  h.run("data.state.assets=[{id:'policy',name:'保单',type:'insurance',currency:'CNY',value:null,asOf:'2026-10-23',inPool:false,insurance:{premiumFrequency:'yearly'},reported:{date:'2026-10-23',value:null,dividends:null,totalReturn:null}}];assetDialog('policy');");
+  const dialog=h.nodes.get('#dialog').innerHTML;assert.ok(!dialog.match(/<input name="value"[^>]*required/));assert.match(dialog,/name="sumAssured"/);assert.ok(!dialog.includes('累计收益'));assert.ok(!dialog.includes('累计分红'));
   const form=new h.Form('asset-form',Object.entries({id:'policy',name:'保单',type:'insurance',currency:'CNY',value:'',asOf:'2026-10-23',account:'',insuranceKind:'savings',valuationBasis:'cash_value',sumAssured:'1000000',paidPremiums:'60000',premiumAmount:'12000',premiumFrequency:'yearly',nextPremiumDate:'2026-11-01'}));
   await h.listeners.submit({target:form,preventDefault(){}});
   assert.equal(received.url,'/api/state');assert.equal(received.body.state.assets[0].value,null);assert.equal(received.body.state.assets[0].insurance.premiumAmount,12000);assert.equal(received.body.state.assets[0].insurance.premiumInExpenses,false);
@@ -273,6 +273,7 @@ test('净资产走势图不填造缺失日期，也能显示负值、单日记�
 
 test('近期资产窗口排除调整前的大幅差异，小额波动使用局部刻度，切换全貌保留全部记录',async()=>{
  const h=componentHarness();h.run("location.hash='#dashboard';data.valuation={day:'2026-10-28'};data.history=[{day:'2026-10-24',netWorth:400000,revision:1},{day:'2026-10-25',netWorth:700000,revision:2},{day:'2026-10-26',netWorth:700100,revision:2},{day:'2026-10-27',netWorth:700050,revision:2},{day:'2026-10-28',netWorth:700150,revision:2}];");
+ await h.listeners.click({target:{closest(){return {dataset:{action:'trend-range',range:'recent'}};}}});
  let html=h.run('netWorthTrendHTML()');assert.match(html,/最近账本调整后 · 2026-10-25 起/);assert.ok(!html.includes('data-day="2026-10-24"'));assert.match(html,/局部刻度/);
  const y=[...html.matchAll(/class="trend-dot[^>]*style="left:[^;]+;top:([\d.]+)%/g)].map(m=>Number(m[1]));assert.ok(Math.max(...y)-Math.min(...y)>70);assert.ok(!/NaN|Infinity/.test(html));
  await h.listeners.click({target:{closest(){return {dataset:{action:'trend-range',range:'30'}};}}});html=h.run('netWorthTrendHTML()');assert.match(html,/data-day="2026-10-24"/);assert.match(html,/stroke-dasharray/);
@@ -703,4 +704,13 @@ test('沪深市场包含ETF子页并保留其他市场导航，更新操作使�
   assert.equal(h.run('route'),'cn-etf');assert.match(html,/每日份额与净申赎/);assert.match(html,/不能据此确认汇金/);
   await h.listeners.click({target:{closest:()=>({dataset:{action:'refresh-cn-market'}})}});
   assert.equal(refreshes,1);assert.equal(h.run('cnMarketBusy'),false);
+});
+
+test('季度持仓复盘按北京时间切换，到期后保留提醒直到本季完成',()=>{
+  const h=componentHarness();
+  assert.match(h.run('quarterlyReviewHTML(firstReview-1)'),/2027年1月5日/);
+  assert.match(h.run('quarterlyReviewHTML(firstReview)'),/标记已复盘/);
+  h.run('globalThis.localStorage={getItem:()=>String(firstReview)}');
+  assert.match(h.run('quarterlyReviewHTML(Date.UTC(2027,2,1))'),/2027年4月5日/);
+  assert.match(h.run('quarterlyReviewHTML(Date.UTC(2027,3,5,12))'),/本季待复盘/);
 });

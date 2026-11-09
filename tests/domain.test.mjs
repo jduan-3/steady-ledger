@@ -108,6 +108,16 @@ test('保险只按当前价值入资产，默认池外，保额保费与可领�
   assert.equal(m.totalAssets,180000);assert.equal(m.pool,100000);assert.equal(m.availableCash,55000);assert.equal(m.stockRatio,45);assert.equal(m.categories.insurance,80000);
   assert.equal(s.assets[2].inPool,false);
 });
+test('普通保险不触发短期估值过期提醒，投连险与其他资产仍按配置期限检查',()=>{
+  for(const kind of [undefined,'savings','annuity','protection','investment']) {
+    const s=withPolicy({asOf:'2026-09-01',insurance:{kind,premiumFrequency:'paid_up'}}),m=calculate(s,'2026-10-30');
+    assert.deepEqual(m.stale,kind==='investment'?['现金','股票','储蓄保险']:['现金','股票']);
+    const reminder=evaluate(s,m).find(r=>r.id==='stale');
+    assert.equal(reminder.detail.includes('储蓄保险'),kind==='investment');
+    assert.equal(m.totalAssets,180000);assert.equal(m.pool,100000);
+    s.policy.staleDays=60;assert.deepEqual(calculate(s,'2026-10-30').stale,[]);
+  }
+});
 test('保险未知价值与确认零价值有区别，不能用保额代替',()=>{
   const unknown=withPolicy({value:null}),m=calculate(unknown,date);
   assert.equal(m.totalAssets,100000);assert.equal(m.complete,false);assert.equal(m.stockRatio,45);assert.ok(m.missing.some(x=>x.includes('当前价值')));

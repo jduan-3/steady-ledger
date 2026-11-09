@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../src/store.mjs';
-import { parseNasdaqMonthly, calculateMonthlyPerformance, monthlyPerformance, refreshMonthlyPerformance, NASDAQ_MONTHLY_CACHE } from '../src/monthly-performance.mjs';
+import { parseNasdaqMonthly, calculateMonthlyPerformance, monthlyPerformance, refreshMonthlyPerformance, NASDAQ_MONTHLY_CACHE, NASDAQ_MONTHLY_URL } from '../src/monthly-performance.mjs';
 import { monthlyPageHTML } from '../public/monthly-performance.js';
 import { buildAssistantData, readAssistantPage } from '../src/assistant-data.mjs';
 const now=new Date('2026-10-29T08:00:00Z');
@@ -54,6 +54,27 @@ test('a new month bypasses the cache interval, and failed refresh retains provis
   await refreshMonthlyPerformance(store,{fetchImpl:async()=>Response.json(input),now:before});
   const view=await refreshMonthlyPerformance(store,{fetchImpl:async()=>{throw new Error('offline');},now:new Date('2026-11-01T05:00:00Z')});
   assert.ok(view.error);assert.equal(view.rows[0].months[9].status,'pending');assert.equal(view.statistics[9].samples,0);
+});
+test('index month lines replace an outdated current-month return and show the actual cutoff by default',async t=>{
+  const store=fixture(t),checkedAt=new Date('2026-11-06T07:00:00Z'),revision=store.state().revision;
+  store.setKV(NASDAQ_MONTHLY_CACHE,{points:parseNasdaqMonthly(wire([['2026-10-30',25437],['2026-11-03',25372.01]]),checkedAt),updatedAt:'2026-11-04T05:59:44Z',attemptedAt:'2026-11-06T06:53:55Z',error:'月线更新未完成，已保留上次数据。请稍后重试。'});
+  near(monthlyPerformance(store,checkedAt).rows[0].months[10].percent,-0.25549396548335546);
+  const view=await refreshMonthlyPerformance(store,{now:checkedAt,fetchImpl:async url=>{
+    assert.equal(url,NASDAQ_MONTHLY_URL);assert.match(url,/\/kline\/kline\?param=us\.IXIC,month,,,42$/);
+    return Response.json(wire([['2026-10-30',25437],['2026-11-05',24315]]));
+  }});
+  const november=view.rows[0].months[10];near(november.percent,-4.410897511499002);
+  assert.equal(view.error,null);assert.equal(view.latestDate,'2026-11-05');assert.equal(view.updatedAt,checkedAt.toISOString());
+  assert.equal(november.status,'partial');assert.equal(view.statistics[10].samples,0);assert.equal(store.state().revision,revision);
+  const html=monthlyPageHTML(view);assert.match(html,/−4.41%/);assert.match(html,/本月暂计<\/small><small>截至 11-05<\/small>/);
+  assert.match(html,/data-period="2026-11"[^>]*aria-pressed="true"/);assert.match(html,/2026-10-30 25,437.00 → 2026-11-05 24,315.00/);
+});
+test('an HTTP error preserves the old return and makes its cutoff explicit in the failure notice',async t=>{
+  const store=fixture(t),checkedAt=new Date('2026-11-06T07:00:00Z'),updatedAt='2026-11-04T05:59:44Z';
+  store.setKV(NASDAQ_MONTHLY_CACHE,{points:parseNasdaqMonthly(wire([['2026-10-30',25437],['2026-11-03',25372.01]]),checkedAt),updatedAt});
+  const view=await refreshMonthlyPerformance(store,{now:checkedAt,fetchImpl:async()=>new Response('<html>Unavailable</html>',{status:501})});
+  assert.equal(view.updatedAt,updatedAt);assert.equal(view.latestDate,'2026-11-03');assert.match(view.error,/保留上次数据/);
+  const html=monthlyPageHTML(view);assert.match(html,/−0.26%/);assert.match(html,/当前保留截至 2026-11-03 的数据/);assert.match(html,/截至 11-03<\/small>/);
 });
 test('page shows signed values, provisional and missing cells, selectable close details, source errors and empty states',t=>{
   const store=fixture(t);store.setKV(NASDAQ_MONTHLY_CACHE,{points:parseNasdaqMonthly(input,now)});

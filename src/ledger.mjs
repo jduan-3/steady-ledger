@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { nowDate } from './domain.mjs';
 import { securityKey, isoDay, marketDay, MARKETS } from './securities.mjs';
 import { runOpenD, stockQuote } from './market.mjs';
@@ -8,6 +8,8 @@ import { inferredCostBasis } from './investments.mjs';
 
 const round=n=>Math.round(n*100)/100;
 const normalize=s=>String(s||'').normalize('NFKC').replace(/[\s,，]/g,'').toLowerCase();
+const instrumentKey = asset => asset.security?.key || (asset.fund?.code ? 'FUND.' + asset.fund.code : null);
+const matchesPlanCode = (asset, code) => !code || [asset.security?.key, asset.security?.symbol, asset.fund?.code].includes(code);
 const fingerprint=a=>JSON.stringify(a?{quantity:a.quantity,costBasis:a.costBasis??null,key:a.security?.key||a.fund?.code,currency:a.currency}:null);
 const clarificationInstruction='先按已确认的用户原话纠正参数；确实缺信息时只询问 question 中的缺项，保留同一笔记录的其他已确认信息，补答后继续。不要要求重说完整指令，也不要在没有新信息时反复调用失败工具。此状态尚未保存待入账记录，不得承诺净值披露后会自动执行。';
 const need=(missing,extra={})=>({status:'needs_information',requiresUserInput:true,missing:[missing],question:'请补充或确认：'+missing+'。',instruction:clarificationInstruction,...extra});
@@ -184,8 +186,16 @@ export function holdingPrice(store,asset,date,now=new Date()) {
   return [store.getKV('ledger_close:'+key+':'+date),...store.priceHistory(key)].find(q=>q?.date===date&&q.price>0&&q.basis==='unadjusted_close')||null;
 }
 export function applyHoldingEntry(state,entry,price) {
+  const plan=entry.planId?state.buyPlans?.find(p=>p.id===entry.planId):null;
+  if(entry.planId&&plan?.status!=='pending')return {receipt:{status:'blocked',message:'计划状态已改变，请核对成交'}};
+  if (plan && (plan.currency !== entry.asset.currency || !matchesPlanCode(entry.asset, plan.code))) {
+    return {receipt: {status: 'blocked', message: '计划的标的或币种已变更，请核对成交'}};
+  }
   const asset=state.assets.find(a=>a.id===entry.asset.id);
-  if(fingerprint(asset)!==entry.base)return {receipt:{status:'blocked',message:'持仓已被其他修改更新，请核对这笔待入账记录，未重复追加。'}};
+  if (!asset && state.assets.some(a => instrumentKey(a) === instrumentKey(entry.asset))) {
+    return {receipt: {status: 'blocked', message: '该标的已有持仓，请核对后选择已有账户登记成交'}};
+  }
+  if((asset && instrumentKey(asset) !== instrumentKey(entry.asset)) || fingerprint(asset)!==entry.base)return {receipt:{status:'blocked',message:'持仓已被其他修改更新，请核对这笔待入账记录，未重复追加。'}};
   const target=asset||structuredClone(entry.asset),oldQuantity=target.quantity;
   if(!Number.isFinite(oldQuantity))throw new Error('原持仓数量未知，请先确认当前数量');
   const quantity=entry.quantity??Math.round((entry.amount-(entry.side==='buy'?(entry.fee??0):0))/price.price*1e8)/1e8;
@@ -204,6 +214,7 @@ export function applyHoldingEntry(state,entry,price) {
   target.costBasis=nextCost==null?null:{amount:round(nextCost),quantity:nextQuantity,currency:target.currency,method:'entered'};
   if(target.fund)delete target.fund.valuationOverride;
   if(!asset)state.assets.push(target);
+  if(plan){plan.status='completed';plan.completedOn=entry.date;plan.entryId=entry.id;}
   if(cash){cash.value=round(cash.value+cashDelta);cash.asOf=entry.date;}
   return {state,receipt:{price,quantity,amount,estimated:entry.price==null||entry.quantity==null,feeKnown:entry.fee!=null,before,after:{quantity:nextQuantity,cost:nextCost,cash:cash?.value??null},message:(entry.price==null||entry.quantity==null?'已按指定日期价格估算入账；实际份额、成交价或费用可随后校正。':'已按提供的成交资料入账。')+(entry.fee==null?'未提供费用，现金按已知金额记录。':'')}};
 }
@@ -229,12 +240,45 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
   }
   async function post(entry,check=()=>{}) {
     const price=await priceFor(entry);
-    check();
-    if(!price)return store.postLedgerEntry(entry);
-    return store.postLedgerEntry(entry,(state,saved)=>applyHoldingEntry(state,saved,price));
+    if(!price)return store.postLedgerEntry(entry,null,check);
+    return store.postLedgerEntry(entry,(state,saved)=>applyHoldingEntry(state,saved,price),check);
   }
   const permitted=scope=>{const c=store.config();if(!c.allowLedgerWrites||!c.consent||(scope&&c.scopeId!==scope))throw new Error('自然语言记账未开启或授权已变更');};
   return {
+    async executePlan(input){
+      const state=store.state({raw:true}),plan=state.buyPlans.find(p=>p.id===input.planId);
+      if(!plan||plan.status!=='pending'||state.revision!==input.revision)throw new Error('计划已更新，请刷新');
+      const {amount,fee,price}=input,date=isoDay(input.date);
+      if(!Number.isFinite(amount)||amount<=0||amount>1e14||!Number.isFinite(fee)||fee<0||fee>=amount||price!=null&&(!Number.isFinite(price)||price<=0||price>1e14))throw new Error('成交金额、费用或成交价无效');
+      const creating = input.assetId === 'new';
+      const existingAsset = creating ? null : state.assets.find(a => a.id === input.assetId);
+      let asset = existingAsset;
+      if(creating){
+        const sec=/^(US|HK|SH|SZ|BJ)\./.test(plan.code)?securityKey(plan.code):null;
+        if(!sec&&!/^\d{6}$/.test(plan.code))throw new Error('请先登记该持仓，或在计划中填写基金代码或带市场前缀的股票代码');
+        if(!sec&&input.newType!=='fund')throw new Error('请确认新建标的为基金');
+        if(state.assets.some(a=>sec?a.security?.key===sec.key:a.fund?.code===plan.code))throw new Error('该标的已有持仓，请选择已有账户');
+        asset={id:randomUUID(),name:plan.name,type:sec?'stock':'fund',currency:sec?.currency||'CNY',quantity:0,value:0,unit:sec?'股':'份',inPool:true,...(sec?{security:sec,autoPrice:true}:{fund:{code:plan.code,autoNav:true}})};
+      }
+      if(!asset||!(asset.security||asset.fund?.code)||asset.currency!==plan.currency||asset.quantity==null)throw new Error('请选择同币种、已登记数量和代码的持仓');
+      if(!matchesPlanCode(asset, plan.code))throw new Error('计划代码与成交标的不一致');
+      if(date>nowDate(asset.security?MARKETS[asset.security.market].timeZone:state.preferences.timeZone,clock()))throw new Error('未来成交不能入账');
+      if(!price&&[0,6].includes(new Date(date+'T12:00:00Z').getUTCDay()))throw new Error('请选择交易日或填写准确成交价');
+      const cash=state.assets.find(a=>a.id===input.cashAssetId&&a.type==='cash'&&!a.restricted&&a.currency===asset.currency);
+      if(!cash||cash.value-cash.emergency-cash.earmarked<amount)throw new Error('请选择可用余额充足的同币种现金账户');
+      const generation=store.ledgerGeneration(),id='plan:'+randomUUID();
+      const check=()=>{
+        if(store.state({raw:true}).revision!==input.revision||store.ledgerGeneration()!==generation)throw new Error('账本已更新，请刷新核对');
+        const pending = store.ledgerEntries({pending: true, limit: -1});
+        const conflict = pending.some(e => e.planId === plan.id || e.asset?.id === asset.id ||
+          (creating && e.kind === 'holding' && instrumentKey(e.asset) === instrumentKey(asset)));
+        if (conflict) throw new Error('已有待入账记录，请先核对');
+      };
+      check();
+      const entry={id,planId:plan.id,generation,kind:'holding',asset,base:fingerprint(existingAsset),side:'buy',amount,quantity:null,price,fee,date,cashSource:'registered',cashAssetId:cash.id,status:'pending',createdAt:clock().toISOString(),label:'计划成交 · '+plan.name};
+      entry.signature=createHash('sha256').update(JSON.stringify([plan.id,asset.id,cash.id,date,amount,fee,price])).digest('hex');
+      return post(entry,check);
+    },
     bind(meta,{isActive=()=>true}={}){const generation=meta.ledgerGeneration??store.ledgerGeneration();const check=()=>{permitted(meta.scopeId);if(generation!==store.ledgerGeneration())throw new Error('财务档案已清空，旧记账任务已失效，请重新确认');if(!isActive())throw new Error('本轮回答已停止，尚未提交的记账已取消');};return {
       async removeInstrument(args){
         check();const text=removalEvidence(meta),state=store.state({raw:true});
@@ -253,7 +297,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         if(exact.length===1)matches=exact;
         if(matches.length!==1)return need('需要唯一的删除标的',{question:matches.length?'匹配到多条记录，请补充要删除的代码或账户。':'要删除哪项持仓或自选基金？请提供名称或代码。',matches:matches.map(a=>({id:a.id,name:a.name,code:a.fund?.code||a.security?.key,account:a.account}))});
         const asset=matches[0];
-        if(target==='holding'&&store.ledgerEntries({pending:true,limit:5000}).some(e=>e.asset.id===asset.id))return need('持仓有待入账事项',{question:'这项持仓仍有待入账记录，请先处理或取消待入账事项再删除。'});
+        if(target==='holding'&&store.ledgerEntries({pending:true,limit:-1}).some(e=>e.asset.id===asset.id))return need('持仓有待入账事项',{question:'这项持仓仍有待入账记录，请先处理或取消待入账事项再删除。'});
         const entry={id,requestId:meta.requestId,scopeId:meta.scopeId,generation,kind:'remove',target,asset,date:nowDate(state.preferences.timeZone,clock()),status:'pending',createdAt:clock().toISOString(),label:'对话记账 · '+(target==='holding'?'删除持仓 · ':'移除自选 · ')+asset.name};
         entry.signature=createHash('sha256').update(JSON.stringify({target,id:asset.id})).digest('hex');
         return store.postLedgerEntry(entry,current=>{
@@ -286,7 +330,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
           if(asset.currency!=='CNY')checkCurrency(text,{amount:Math.abs(cashDelta),currency:args.currency},'balance',asset.currency);
           if(cash.value+cashDelta<cash.emergency+cash.earmarked-0.001)return need('现金可用余额不足',{question:'现金可用余额不足，请核对现金调整金额或账户。'});
         }
-        if(store.ledgerEntries({pending:true,limit:5000}).some(e=>e.asset.id===asset.id))return need('这项持仓还有待入账记录',{question:'请先核对或取消这项持仓的待入账记录，再校准总持仓。'});
+        if(store.ledgerEntries({pending:true,limit:-1}).some(e=>e.asset.id===asset.id))return need('这项持仓还有待入账记录',{question:'请先核对或取消这项持仓的待入账记录，再校准总持仓。'});
         const date=nowDate(state.preferences.timeZone,new Date(evidence.at)),entry={id:meta.requestId+':balance:'+asset.id,requestId:meta.requestId,scopeId:meta.scopeId,generation,kind:'balance',asset:{id:asset.id,name:asset.name,currency:asset.currency},quantity,averageCost,cashDelta,cashAssetId:cash?.id||null,date,status:'pending',createdAt:clock().toISOString(),label:'对话记账 · 校准持仓 · '+asset.name};
         entry.signature=createHash('sha256').update(JSON.stringify({asset:asset.id,quantity,averageCost,cashDelta,cashAssetId:entry.cashAssetId})).digest('hex');
         const base=fingerprint(asset);
@@ -359,7 +403,7 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         if(prior)return store.postLedgerEntry(entry);
         // A second pending instruction for this asset requires resolving the first
         // rather than silently adding it twice while the closing price is absent.
-        const pending=store.ledgerEntries({pending:true,limit:5000}).find(e=>e.kind==='holding'&&e.asset.id===asset.id);
+        const pending=store.ledgerEntries({pending:true,limit:-1}).find(e=>e.kind==='holding'&&e.asset.id===asset.id);
         if(pending)return need('这项持仓已有待入账记录，请先核对或取消后再登记下一笔',{pending});
         const result=await post(entry,check);
         return {...result,instruction:result.status==='pending'?'指定日期的收盘价／净值尚不可用；已保存待入账记录，价格披露后自动更新持仓与现金。不得说已经改好了份额，也不得借用昨天或盘中价格。':'只说明记账结果及必要的估算口径，不在正文列工具名称或技术过程。'};
@@ -377,10 +421,11 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
       }
     };},
     async processPending(){
-      const config=store.config();if(!config.allowLedgerWrites||!config.consent)return;
-      for(const entry of store.ledgerEntries({pending:true,limit:5000}).filter(e=>e.kind==='holding')){
-        if(entry.scopeId!==config.scopeId){store.postLedgerEntry(entry,()=>({receipt:{status:'blocked',message:'模型或记账授权已变更，请重新核对'}}));continue;}
-        try{await post(entry,()=>permitted(entry.scopeId));}catch(error){store.postLedgerEntry(entry,()=>({receipt:{status:'blocked',message:error.message}}));}
+      const config=store.config();
+      for(const entry of store.ledgerEntries({pending:true,limit:-1}).filter(e=>e.kind==='holding')){
+        if(!entry.planId&&(!config.allowLedgerWrites||!config.consent))continue;
+        if(!entry.planId&&entry.scopeId!==config.scopeId){store.postLedgerEntry(entry,()=>({receipt:{status:'blocked',message:'模型或记账授权已变更，请重新核对'}}));continue;}
+        try{await post(entry,entry.planId?()=>{}:()=>permitted(entry.scopeId));}catch(error){store.postLedgerEntry(entry,()=>({receipt:{status:'blocked',message:error.message}}));}
       }
     }
   };

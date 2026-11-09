@@ -96,7 +96,7 @@ export function validateState(input) {
     const name=text(plan.name,'买入标的名称');if(!name)throw new Error('买入标的名称不能为空');
     const status=plan.status??'pending';if(!['pending','completed','cancelled'].includes(status))throw new Error('买入待办状态无效');
     const currency=plan.currency??'CNY';if(!/^[A-Z]{3}$/.test(currency))throw new Error('计划币种无效');
-    return {id:id(plan.id),name,code:text(plan.code??'','标的代码',40),amount:number(plan.amount,'计划买入金额',{optional:true,min:0.01}),currency,
+    return {id:id(plan.id),...(plan.entryId?{entryId:text(plan.entryId,'成交流水',100)}:{}),name,code:text(plan.code??'','标的代码',40),amount:number(plan.amount,'计划买入金额',{optional:true,min:0.01}),currency,
       plannedDate:plan.plannedDate?dateField(plan.plannedDate,'计划买入日期'):'',condition:text(plan.condition??'','买入条件与备注',1000),status,
       createdOn:dateField(plan.createdOn||nowDate(clean.preferences.timeZone),'待办创建日期'),completedOn:status==='completed'?dateField(plan.completedOn,'执行日期'):''};
   });
@@ -226,7 +226,7 @@ export function calculate(state, currentDate = nowDate(state.preferences.timeZon
       if (!a.restricted) { result.availableCash += Math.max(0, v - e - earmarked); result.availableEarmarked += earmarked; result.liquidReserve += Math.max(0, v - earmarked); }
     }
     if (a.type === 'gold_margin') { result.hasLeverage = true; if (a.notional === null) result.missing.push(`${a.name}的名义敞口未填写`); }
-    if ((Date.parse(currentDate) - Date.parse(a.asOf)) / 86400000 > state.policy.staleDays) result.stale.push(a.name);
+    if ((a.type !== 'insurance' || a.insurance?.kind === 'investment') && (Date.parse(currentDate) - Date.parse(a.asOf)) / 86400000 > state.policy.staleDays) result.stale.push(a.name);
   }
   for (const d of state.debts) {
     const balance = convert(d.balance, d.currency, d.name);

@@ -113,7 +113,8 @@ test('完整页面快照随本轮持久保存，重启不混入账本后续变�
  t.after(async()=>{await runtime.close();store.close();rmSync(dir,{recursive:true,force:true});});
  t.mock.method(globalThis,'fetch',async(_url,{body,signal})=>{
    const request=JSON.parse(body),snapshot=JSON.parse(request.messages[0].content.split('当前已授权财务快照（JSON 数据）：\n')[1]);calls++;
-   assert.equal(snapshot.pageData.pages.assets.assets[0].value,calls<=3?100:200);
+   assert.ok(snapshot.pageData.directory.some(p=>p.page==='assets'));
+   assert.equal(snapshot.metrics.netWorth,calls<=3?100:200);
    if(calls===1)return reply({content:null,tool_calls:[{id:'frozen-read',type:'function',function:{name:'get_page_data',arguments:'{"page":"assets","section":"assets"}'}}]});
    if(calls<=3)assert.equal(JSON.parse(request.messages.at(-1).content).data[0].value,100);
    if(calls===2)return new Promise((_,reject)=>{reached();signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});

@@ -109,7 +109,7 @@ export function createAssistantRuns(store,{dataDir,services}) {
       // Local evidence checks need the start of an unfinished instruction even
       // after six rounds. openAssistantRun independently bounds model history.
       const meta={id:randomUUID(),requestId,scopeId:config.scopeId,ledgerGeneration:store.ledgerGeneration(),conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id):[],startedAt:Date.now()};
-      if(config.includePageData)meta.pageData=buildAssistantData(store,meta.snapshot);
+      if(config.includePageData)meta.pageData=buildAssistantData(store,meta.snapshot,{indexedLedger:true});
       // Saving the frozen context precedes both opening and submitting work.
       store.setKV(KEY,meta);
       opening=launch(meta).finally(()=>{opening=null;});return opening;
