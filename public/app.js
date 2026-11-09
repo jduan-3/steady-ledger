@@ -361,26 +361,24 @@ function quarterlyReviewHTML(now = Date.now()) {
   const month = Math.floor(shanghai.getUTCMonth() / 3) * 3;
   const quarterDate = offset => Date.UTC(year, month + offset, 5, 12);
   const latest = now >= quarterDate(0) ? quarterDate(0) : quarterDate(-3);
-  const next = Math.max(firstReview, latest === quarterDate(0) ? quarterDate(3) : quarterDate(0));
+  if (latest < firstReview) return '';
   let completed;
   try { completed = localStorage.getItem(reviewStorageKey); } catch {}
-  const due = latest >= firstReview && completed !== String(latest);
-  const date = new Date(due ? latest : next);
-  const when = due ? '本季待复盘' : '下次提醒';
-  const detail = due ? '核对实际持仓与目标配置，结合资金需求决定是否调仓。' :
-    date.toLocaleDateString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'long', day:'numeric'}) + ' 20:00（北京时间）';
-  return `<section id="quarterly-review" class="card welcome"><div><h2>季度持仓复盘</h2><p>${when} · ${detail}</p></div>${due ? button('complete-quarterly-review','标记已复盘','','secondary',`data-review="${latest}"`) : ''}</section>`;
+  if (completed === String(latest)) return '';
+  return `<section class="card welcome"><div><h2>季度持仓复盘</h2><p>本季待复盘 · 核对实际持仓与目标配置，结合资金需求决定是否调仓。</p></div>${button('complete-quarterly-review','标记已复盘','','secondary',`data-review="${latest}"`)}</section>`;
 }
 
 function refreshQuarterlyReview() {
-  const card = document.querySelector('#quarterly-review');
-  if (card) card.outerHTML = quarterlyReviewHTML();
+  const slot = $('#quarterly-review');
+  if (!slot) return;
+  const html = quarterlyReviewHTML();
+  if (slot.innerHTML !== html) slot.innerHTML = html;
 }
 
 function dashboard() {
   const m=data.metrics, s=data.state, risk=data.rules.filter(r=>r.level!=='info').length, hasData=s.assets.length||s.debts.length;
   return `${heading('财务总览','',button('market-refresh','更新行情','refresh')+button('open-ai','个人助手','spark')+button('add-asset','记录资产','plus','primary'))}
-  ${quarterlyReviewHTML()}
+  <div id="quarterly-review">${quarterlyReviewHTML()}</div>
   ${!hasData?`<div class="card welcome"><div><h2>还没有资产记录</h2><p>添加资产、负债和收支后计算汇总。</p></div><div class="welcome-actions">${button('demo','载入演示数据','','secondary')}${button('add-asset','开始记录','arrow','primary')}</div></div>`:''}
   <div class="dashboard-hero"><div class="card wealth-card"><div><div class="wealth-top"><span class="label">已登记净资产${!m.complete?' · 部分估值待补充':''}</span></div><div class="net-worth">${privateAmount('dashboard-net-worth',m.netWorth,'已登记净资产',{hero:true})}</div>${dailyChangeHTML()}</div><div class="wealth-bottom"><div><span class="label">总资产</span><div class="money">${privateAmount('dashboard-total-assets',m.totalAssets,'总资产')}</div></div><div><span class="label">总负债</span><div class="money">${privateAmount('dashboard-total-debt',m.totalDebt,'总负债')}</div></div></div></div>${allocation()}</div>
   ${dailyHistoryHTML()}<div class="metrics-grid">${metric('可支配现金',privateAmount('dashboard-cash',m.availableCash,'可支配现金'),'不含受限、应急与专项预留','wallet')}${metric('股票配置比例',stockPercent(m),`谨慎线 ${s.policy.stockCaution}% · ${m.stockRatio!==null && m.stockRatio>s.policy.stockCaution?'当前超过':'基金配置 '+percent(m.fundRatio)+' · 分开统计'}`,'chart',m.stockRatio>s.policy.stockCaution)}${metric('每月经常性结余',privateAmount('dashboard-surplus',m.surplus,'每月经常性结余'),m.surplus===null?'补齐收入、生活支出和月供后计算':'税后收入 − 必要开支 − 月供','flow',m.surplus!==null&&m.surplus<0)}${metric('必要支出储备',m.reserveMonths===null?'—':m.reserveMonths.toFixed(1)+' 个月',`目标 ${s.profile.emergencyMonths} 个月 · 按流动现金储备`,'shield')}</div>

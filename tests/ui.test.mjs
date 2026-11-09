@@ -706,11 +706,26 @@ test('沪深市场包含ETF子页并保留其他市场导航，更新操作使�
   assert.equal(refreshes,1);assert.equal(h.run('cnMarketBusy'),false);
 });
 
-test('季度持仓复盘按北京时间切换，到期后保留提醒直到本季完成',()=>{
+test('季度持仓复盘到期才显示，完成后隐藏，下一季度再次提醒',async()=>{
   const h=componentHarness();
-  assert.match(h.run('quarterlyReviewHTML(firstReview-1)'),/2027年1月5日/);
-  assert.match(h.run('quarterlyReviewHTML(firstReview)'),/标记已复盘/);
-  h.run('globalThis.localStorage={getItem:()=>String(firstReview)}');
-  assert.match(h.run('quarterlyReviewHTML(Date.UTC(2027,2,1))'),/2027年4月5日/);
-  assert.match(h.run('quarterlyReviewHTML(Date.UTC(2027,3,5,12))'),/本季待复盘/);
+  h.run(`Date.now=()=>firstReview-1;
+    const storage=new Map();
+    globalThis.localStorage={getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)};`);
+  assert.match(h.run('dashboard()'),/<div id="quarterly-review"><\/div>/);
+  h.run('refreshQuarterlyReview()');
+  const slot=h.nodes.get('#quarterly-review');
+  assert.equal(slot.innerHTML,'');
+
+  h.run('Date.now=()=>firstReview;refreshQuarterlyReview()');
+  assert.match(slot.innerHTML,/本季待复盘/);
+  h.run('Date.now=()=>Date.UTC(2027,2,1);refreshQuarterlyReview()');
+  assert.match(slot.innerHTML,/标记已复盘/);
+  const review=slot.innerHTML.match(/data-review="(\d+)"/)[1];
+  await h.listeners.click({target:{closest:()=>({dataset:{action:'complete-quarterly-review',review}})}});
+  assert.equal(slot.innerHTML,'');
+
+  h.run('Date.now=()=>Date.UTC(2027,3,5,12)-1;refreshQuarterlyReview()');
+  assert.equal(slot.innerHTML,'');
+  h.run('Date.now=()=>Date.UTC(2027,3,5,12);refreshQuarterlyReview()');
+  assert.match(slot.innerHTML,/本季待复盘/);
 });
