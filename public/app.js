@@ -965,6 +965,9 @@ function calculationDialog() {
   showDialog('计算口径','基准币种为人民币，以下金额来自当前已登记资料。',`<div class="comparison">${[['总资产',money(m.totalAssets)],['总负债（含负权益）',money(m.totalDebt)],['配置资产池净值',money(m.pool)],['配置池内股票敞口',money(m.equity)],['配置池内基金估值',money(m.fundValue)],['基金配置比例',percent(m.fundRatio)],['股票比例',stockPercent(m)],['应急预留',money(m.emergency)],['专项预留',money(m.earmarked)],['可支配现金',money(m.availableCash)]].map(([l,v])=>`<div class="compare-row" style="grid-template-columns:1.3fr 1fr"><span>${l}</span><span>${v}</span></div>`).join('')}</div><p class="inline-note">股票比例采用同一配置池的分子与分母；房产、车辆、应急及专项预留不在配置池中。保险默认在池外，可单独调整。投资融资从池净值扣除。基金单独统计，不折算计入股票比例；这不是格雷厄姆原著的纯股债比例。必要支出储备包括非受限现金，扣除专项款，可包含应急预留。</p>`);
 }
 
+document.addEventListener('load',event=>{
+  if(event.target.matches?.('.watchboard-logo > img'))event.target.parentElement.classList.add('has-logo');
+},true);
 document.addEventListener('pointermove',event=>{
   const target=event.target.closest?.('[data-reference-hover] [data-action="fund-reference-point"]');
   if(!target||!activePriceHistory||activePriceHistory.referencePointerIndex===target.dataset.index)return;

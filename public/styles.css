@@ -1025,10 +1025,10 @@ button.monthly-cell:hover{filter:brightness(.97);box-shadow:0 0 0 2px #37352f22}
 .monthly-notice{font-size:12px;color:#9b7348;border:1px solid #eadfcb;background:#fcfaf5;border-radius:4px;padding:12px 16px;margin-bottom:18px}
 .monthly-loading{padding:48px 20px;text-align:center;color:#9b9a97;font-size:12px}
 
-/* Desktop stock and ETF watch cards. */
-.watchboard-page{min-width:980px;max-width:1480px;padding-bottom:24px}
+/* Stock and ETF watch cards. */
+.watchboard-page{max-width:1480px;padding-bottom:24px}
 .watchboard-page .page-heading{align-items:center;margin-bottom:25px}
-.watchboard-coverage{text-align:right;white-space:nowrap}
+.watchboard-coverage{flex-shrink:0;text-align:right;white-space:nowrap}
 .watchboard-coverage>strong{display:block;font-size:26px;font-weight:500;color:#57564f;font-variant-numeric:tabular-nums}
 .watchboard-coverage strong small{font-size:15px;color:#c2c1bd;font-weight:400}
 .watchboard-coverage>span{display:block;font-size:10px;color:#9b9a97;margin-top:5px}
@@ -1052,9 +1052,12 @@ button.monthly-cell:hover{filter:brightness(.97);box-shadow:0 0 0 2px #37352f22}
 .watchboard-tile{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:17px 9px 11px;background:#f7f7f5;border:1px solid #efefec;border-radius:6px;font-family:inherit;color:#57564f;cursor:pointer;text-align:center;transition:background .15s,border-color .15s,box-shadow .15s}
 .watchboard-tile:hover{background:#f1f1ee;border-color:#d6d5cf;box-shadow:0 2px 8px #37352f08}
 .watchboard-tile:focus-visible{outline:2px solid #2383e2;outline-offset:2px}
-.watchboard-logo{display:grid;place-items:center;flex-shrink:0;width:38px;height:38px;margin-bottom:11px;border-radius:5px;background:#eaeae6;color:#73726a}
+.watchboard-logo{display:grid;place-items:center;flex-shrink:0;width:40px;height:40px;margin-bottom:11px;border:1px solid #ebeae6;border-radius:8px;background:#eaeae6;color:#68675f}
 .watchboard-logo.has-logo{background:#fff}
-.watchboard-logo img{width:30px;height:30px;object-fit:contain;display:block}
+.watchboard-logo>*{grid-area:1/1}
+.watchboard-logo img{width:32px;height:32px;object-fit:contain;border-radius:5px;visibility:hidden}
+.watchboard-logo.has-logo img{visibility:visible}
+.watchboard-logo.has-logo>span{visibility:hidden}
 .watchboard-logo>span{font-size:10px;letter-spacing:-.3px;font-weight:600}
 .watchboard-name{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;color:#57564f;font-weight:500}
 .watchboard-symbol{display:block;font-size:9px;line-height:15px;color:#b0afaa;letter-spacing:.3px}
@@ -1076,6 +1079,19 @@ button.monthly-cell:hover{filter:brightness(.97);box-shadow:0 0 0 2px #37352f22}
 .watchboard-detail-quote>strong{display:block;font-size:26px;font-weight:500;color:#57564f;margin:12px 0 5px;font-variant-numeric:tabular-nums}
 .watchboard-detail-quote>b{font-size:14px;font-weight:500}
 .watchboard-detail-quote p{font-size:10px;line-height:1.9;color:#9b9a97;margin-top:13px}
+@media(max-width:1100px){
+  .watchboard-grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
+}
+@media(max-width:720px){
+  .watchboard-toolbar{flex-wrap:wrap;gap:8px;top:40px}
+  .watchboard-switch button{padding-inline:12px}
+  .watchboard-search{order:1;flex:1 0 100%;max-width:none}
+  .watchboard-actions,.watchboard-caption{gap:8px}
+  .watchboard-tile{padding-inline:5px}
+  .watchboard-tile-foot{flex-wrap:wrap;gap:2px 6px}
+  .watchboard-detail-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .watchboard-detail-quote{padding:12px}
+}
 /* Public ETF market references are separate from official fund NAV valuations. */
 .fund-reference{margin-top:28px;border-top:1px solid #e6ece8;padding-top:26px;min-width:0}.fund-reference-heading{display:flex;justify-content:space-between;align-items:center;gap:15px}.fund-reference-heading h3{font-size:16px;font-weight:550;margin-top:5px}.fund-reference-eyebrow{font-size:10px;color:#8b9c91;letter-spacing:1.4px}.fund-reference-identity{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:18px;font-size:12px;color:#7a8a82}.fund-reference-identity strong{font-size:13px;color:#3d5549;font-weight:550}.fund-reference-badge{background:#edf3ee;color:#5e7b66;padding:4px 7px;border-radius:5px;font-size:10px}.fund-reference-purpose{font-size:11px;color:#83938a;line-height:1.8;margin-top:10px}.fund-reference-quote{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-top:23px;font-variant-numeric:tabular-nums}.fund-reference-quote>strong{font-size:28px;font-weight:550;letter-spacing:-.7px;color:#344e40}.fund-reference-quote small{font-size:11px;font-weight:400;color:#8b9c91;letter-spacing:0}.fund-reference-quote>b{font-size:15px;font-weight:500}.fund-reference-quote>span{font-size:10px;color:#92a097;flex-basis:100%}.fund-reference-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px 16px;margin:22px 0}.fund-reference-stats span{display:block;font-size:10px;color:#8b9a91}.fund-reference-stats strong{display:block;font-size:12px;color:#53695b;font-weight:500;margin-top:7px;font-variant-numeric:tabular-nums}.fund-reference-status{font-size:11px;color:#a18a6f;line-height:1.8;margin:10px 0}.fund-reference-modes{display:flex;gap:6px;margin:22px 0 16px}.fund-reference-modes button:disabled{opacity:.45;cursor:default}.fund-reference-reading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;font-variant-numeric:tabular-nums}.fund-reference-reading strong{font-size:18px;font-weight:500;color:#455f4f}.fund-reference-reading small{font-size:10px;font-weight:400;color:#92a097}.fund-reference-reading b{font-size:12px;font-weight:500}.fund-reference-reading span{display:block;font-size:10px;color:#95a298;line-height:1.7;margin-top:5px}.fund-reference-chart{display:block;width:100%;height:auto;margin:17px 0 13px;overflow:visible}.fund-reference-chart text{font-size:16px;fill:#96a398}.fund-reference-grid{fill:none;stroke:#e7ede8;stroke-dasharray:4 6}.fund-reference-price{fill:none;stroke:#6a9477;stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round}.fund-reference-guide{stroke:#a5b9ab;stroke-dasharray:4 5;vector-effect:non-scaling-stroke}.fund-reference-selected{fill:#50785c;stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke}.fund-reference-selector{display:flex;align-items:center;gap:12px;font-size:10px;color:#82958a;margin:12px 0}.fund-reference-selector>span:last-child{min-width:64px;text-align:right;font-variant-numeric:tabular-nums}.fund-reference-selector input{flex:1;min-width:0;accent-color:#64826b;padding:0;height:20px}.fund-reference-chart-note,.fund-reference-empty{font-size:11px;color:#95a297;line-height:1.8}.fund-reference-empty{padding:22px 0}.fund-reference-sources{margin-top:18px;font-size:11px;color:#8b9b91;line-height:1.9}.fund-reference-sources summary{cursor:pointer;color:#6f8777}.fund-reference-sources p{margin-top:9px}.fund-reference-sources a{text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
 @media(max-width:720px){.fund-reference{margin-top:22px;padding-top:22px}.fund-reference-reading{gap:9px}.fund-reference-reading strong{font-size:16px}.fund-reference-reading b{font-size:11px}.fund-reference-reading span{font-size:9px}.fund-reference-stats{gap:16px 10px}.fund-reference-quote>strong{font-size:25px}.fund-reference-identity{gap:7px}.fund-reference-chart text{font-size:23px}.fund-reference-heading .text-btn{font-size:11px}}

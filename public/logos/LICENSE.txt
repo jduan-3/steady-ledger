@@ -1,5 +1,16 @@
-Brand icons from Simple Icons: https://github.com/simple-icons/simple-icons
-Brand names and marks belong to their respective owners.
+Brand names and marks belong to their respective owners and identify the listed securities and ETF families.
+
+Asset sources
+
+- Simple Icons (CC0 1.0, text below): https://github.com/simple-icons/simple-icons
+- Additional ticker-named company marks from Global Stock Logos: https://github.com/MrChartist/global-stock-logos/tree/main/logos/us
+- First Trust, iShares, Invesco, Direxion, JPMorgan Chase and Mercado Libre from TradingView's symbol logo collection: https://s3-symbol-logo.tradingview.com/
+- ARK: https://logoapi.sh/ticker/ARKK.svg
+- SPDR: https://images.financialmodelingprep.com/symbol/SPY.png
+- SPDR Gold Shares: https://www.spdrgoldshares.com/favicon-96x96.png
+- Coca-Cola Europacific Partners (public-domain artwork per Wikimedia Commons): https://commons.wikimedia.org/wiki/File:Coca-Cola_Europacific_Partners_Logo_2021.svg
+
+The CC0 dedication below applies to the Simple Icons artwork.
 
 # CC0 1.0 Universal
 

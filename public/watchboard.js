@@ -14,8 +14,8 @@ function selectedGroups(view,{query='',mode='latest'}={}) {
   })})).filter(g=>g.items.length);
 }
 function logoHTML(item) {
-  const slug=watchboardLogos[item.symbol];
-  return `<span class="watchboard-logo ${slug?'has-logo':''}">${slug?`<img src="/logos/${slug}.svg" alt="" width="34" height="34" loading="lazy">`:`<span>${esc(item.symbol)}</span>`}</span>`;
+  const slug=Object.hasOwn(watchboardLogos,item.symbol)?watchboardLogos[item.symbol]:null;
+  return `<span class="watchboard-logo" aria-hidden="true"><span>${esc(item.symbol)}</span>${slug?`<img src="/logos/${slug}.svg" alt="" width="32" height="32" loading="lazy">`:''}</span>`;
 }
 function cardHTML(item,mode,latestDate) {
   const q=quoteFor(item,mode),stale=q&&latestDate&&q.date<latestDate;
@@ -34,7 +34,7 @@ export function watchboardPageHTML(view,{mode='latest',query='',loading=false,er
   <div class="watchboard-caption"><span>${mode==='close'?'已完成交易日的收盘记录':'最新可用报价快照'}${date?' · '+esc(date):''} · 美国东部时间</span><span><i class="watchboard-dot gain"></i>上涨 <i class="watchboard-dot loss"></i>下跌${loading?' · 正在检查更新':''}</span></div>
   ${error||view?.error?`<div class="monthly-notice" role="status">${esc(error||view.error)}</div>`:''}
   <div id="watchboard-results" aria-busy="${loading}">${watchboardGroupsHTML(view,{mode,query})}</div>
-  <p class="watchboard-method">${esc(view?.method||'预设观察样本；缺失数据不补零，报价时间以来源为准。')}<br>来源：<a href="https://gu.qq.com/" target="_blank" rel="noopener noreferrer">腾讯证券</a> · 公司标识由 Simple Icons 提供，其余使用证券代码。</p></div>`;
+  <p class="watchboard-method">${esc(view?.method||'预设观察样本；缺失数据不补零，报价时间以来源为准。')}<br>行情来源：<a href="https://gu.qq.com/" target="_blank" rel="noopener noreferrer">腾讯证券</a> · <a href="/logos/LICENSE.txt" target="_blank" rel="noopener">标识来源</a></p></div>`;
 }
 export function watchboardQuoteHTML(item,{mode='latest'}={}) {
   const panel=(label,q)=>`<section class="watchboard-detail-quote"><span>${label}</span><strong>${price(q)}</strong><b class="watchboard-text-${tone(q?.percent)}">${signed(q?.percent,2)}</b><p>${q?`${esc(q.time||q.date)} · 美国东部时间<br>${esc(q.source)}${q.previous?`<br>对比前收盘 $${q.previous.price.toFixed(2)}`:''}`:'尚未取得有效数据'}</p></section>`;

@@ -18,7 +18,8 @@ test('watch groups resolve to distinct US-listed quote keys, ETF labels are reta
   for(const g of WATCH_GROUPS)for(const k of g.keys)assert.ok(WATCH_INSTRUMENTS.some(i=>i.key===k));
   assert.equal(WATCH_INSTRUMENTS.find(i=>i.symbol==='SOXL').kind,'etf');
   assert.ok(!WATCH_INSTRUMENTS.some(i=>i.symbol==='SPACEX'));
-  for(const slug of Object.values(watchboardLogos))assert.ok(existsSync(new URL('../public/logos/'+slug+'.svg',import.meta.url)));
+  assert.deepEqual(Object.keys(watchboardLogos).sort(),WATCH_INSTRUMENTS.map(i=>i.symbol).sort());
+  for(const slug of new Set(Object.values(watchboardLogos)))assert.ok(existsSync(new URL('../public/logos/'+slug+'.svg',import.meta.url)),slug);
   assert.match(readFileSync(new URL('../public/logos/LICENSE.txt',import.meta.url),'utf8'),/Simple Icons/);
 });
 test('quote validation keeps missing previous closes unknown and rejects future dates or wrong instruments',()=>{
@@ -72,7 +73,10 @@ test('cards filter names and codes, sort valid changes ahead of missing values, 
   html=watchboardGroupsHTML(view,{query:'msft'});assert.match(html,/微软/);assert.ok(!html.includes('data-key="US.AAPL"'));
   assert.match(watchboardGroupsHTML(view,{query:'苹果'}),/data-key="US.AAPL"/);assert.match(watchboardGroupsHTML(view,{query:'不存在'}),/没有找到匹配/);
   const text=watchboardCopyText(view,{query:'msft',mode:'close'});assert.match(text,/−5.00%/);assert.ok(!text.includes('AAPL'));
-  assert.match(watchboardQuoteHTML(msft,{mode:'close'}),/最近收盘/);assert.match(watchboardPageHTML(view,{error:'<img src=x>'}),/&lt;img src=x&gt;/);
+  const detail=watchboardQuoteHTML(msft,{mode:'close'});
+  assert.match(detail,/最近收盘/);
+  assert.match(detail,/<span>MSFT<\/span><img src="\/logos\/msft\.svg"/);
+  assert.match(watchboardPageHTML(view,{error:'<img src=x>'}),/&lt;img src=x&gt;/);
 });
 test('all watch quotes remain accessible to the authorized assistant with pagination and an explicit automatic-context directory',async t=>{
   const store=fixture(t);await refreshWatchboard(store,{now,quoteProvider:provider});
