@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { openAssistantRun, requireAI } from './ai.mjs';
 import { buildAssistantData } from './assistant-data.mjs';
+import { operationContext, operationServices, operationSummary } from './assistant-operations.mjs';
 
 const KEY='assistant_active_run';
 const error=(message,status=409)=>Object.assign(new Error(message),{status});
@@ -43,17 +44,22 @@ export function createAssistantRuns(store,{dataDir,services}) {
       mkdirSync(directory,{recursive:true,mode:0o700});
       const fd=openSync(filename(meta.id),'a',0o600);closeSync(fd);chmodSync(filename(meta.id),0o600);
       const storage=await openNodeSqliteStorage(filename(meta.id));
-      run.session=await openAssistantRun(config,meta.snapshot,meta.question,{storage,history:meta.history,pageData:meta.pageData,services:services(config,meta,{isActive:()=>!run.stopping&&!suspended}),startedAt:meta.startedAt,onEvent:event=>publish(run,event)});
+      const operations=operationServices(store,meta,(input,control)=>services(config,input,control),{isActive:()=>!run.stopping&&!suspended});
+      const intentContext=meta.operationContext?.recovering?{id:meta.operationContext.id,question:meta.operationContext.question,replies:meta.operationContext.replies,operations:meta.operationContext.operations,receipts:meta.operationContext.receipts}:null;
+      run.session=await openAssistantRun(config,meta.snapshot,meta.question,{storage,history:meta.history,pageData:meta.pageData,operationContext:intentContext,services:operations.services,startedAt:meta.startedAt,onEvent:event=>publish(run,event)});
       run.promise=run.session.run().then(result=>{
         if(suspended)return;
         if(run.stopping||config.scopeId!==currentScope()||config.includeHistory!==store.config().includeHistory)throw Object.assign(new Error('回答已停止，或授权范围已更新'),{code:'AI_CANCELLED'});
-        store.addConversation(meta.question,result.content,result.revision,{aiChat:true,scopeId:config.scopeId,conversationId:meta.conversationId,model:config.model,toolsUsed:result.toolsUsed,toolCalls:result.toolCalls,durableRunId:meta.id,requestId:meta.requestId});
+        const intent=operations.finish('done');
+        store.addConversation(meta.question,result.content,result.revision,{aiChat:true,scopeId:config.scopeId,conversationId:meta.conversationId,model:config.model,toolsUsed:result.toolsUsed,toolCalls:result.toolCalls,durableRunId:meta.id,requestId:meta.requestId,operationId:intent?.id});
         store.setConnection(config.scopeId,{ok:true,tools:result.toolsUsed.some(t=>t.ok)||config.connection?.tools===true,message:'最近一次问答成功'});
         saveTerminal(run,'done',{revision:result.revision});
         return result;
       }).catch(cause=>{
         if(suspended)return;
         const message=cause.code==='AI_CANCELLED'?'已停止回答，可以修改问题后重新发送。':cause.message;
+        const intent=operations.finish('failed'),summary=operationSummary(intent);
+        if(summary)store.addConversation(meta.question,'回答未完成。'+summary+'。继续本次记录时会沿用已有凭据，已完成部分不会重复入账。',store.state().revision,{aiChat:true,partial:true,scopeId:config.scopeId,conversationId:meta.conversationId,toolCalls:run.toolCalls,durableRunId:meta.id,requestId:meta.requestId,operationId:intent.id});
         saveTerminal(run,'failed',{error:message,code:cause.code||'AI_GENERATION'});
         if(cause.code!=='AI_CANCELLED')store.setConnection(config.scopeId,{ok:false,message,code:cause.code});
         throw Object.assign(new Error(message),{code:cause.code||'AI_GENERATION'});
@@ -109,6 +115,7 @@ export function createAssistantRuns(store,{dataDir,services}) {
       // Local evidence checks need the start of an unfinished instruction even
       // after six rounds. openAssistantRun independently bounds model history.
       const meta={id:randomUUID(),requestId,scopeId:config.scopeId,ledgerGeneration:store.ledgerGeneration(),conversationId:thread.id,contextEnabled:config.includeHistory,question,status:'running',snapshot:store.state(),history:config.includeHistory?store.messages(thread.id):[],startedAt:Date.now()};
+      meta.operationContext=operationContext(store,meta);
       if(config.includePageData)meta.pageData=buildAssistantData(store,meta.snapshot,{indexedLedger:true});
       // Saving the frozen context precedes both opening and submitting work.
       store.setKV(KEY,meta);

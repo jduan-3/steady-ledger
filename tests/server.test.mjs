@@ -159,6 +159,27 @@ test('基金盘中参考接口需要登录，读取缓存和刷新均不改变�
   const component=await fetch(base+'/fund-reference.js');assert.equal(component.status,200);assert.match(await component.text(),/fundReferenceHTML/);
 });
 const toolReply=(name,args)=>({role:'assistant',content:null,tool_calls:[{id:'call_test',type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+test('意外现金经聊天接口允许证据空白差异和旧对话现金补答，收入只记一次',async t=>{
+  for(const recover of [false,true])await t.test(recover?'补答现金':'原话多空格',async t=>{
+    const original='多了3000的意外现金   帮我加入一下';
+    const upstream=await modelServer(t,(payload,n)=>{
+      if(n===1)return toolReply('record_cash_flow',{evidence:'多了3000的意外现金 帮我加入一下'+(recover?'；现金':''),side:'income',amount:3000,description:'意外现金收入',...(recover?{}:{cashAssetId:'cash',currency:'CNY'})});
+      const output=JSON.parse(payload.messages.at(-1).content);assert.equal(output.status,'applied');assert.equal(output.after.cash,13000);
+      return {content:'已记录意外现金收入3000元，现金余额13000元。'};
+    });
+    const {request,app}=await setup(t,{disableAuth:true}),state=app.store.state();state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:10000}];app.store.save(state,state.revision);
+    await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
+    const config=app.store.config(),conversation=app.store.createConversation(config.scopeId,original);
+    if(recover){
+      const metadata={aiChat:true,scopeId:config.scopeId,conversationId:conversation.id,toolCalls:[{name:'record_cash_flow',status:'complete',output:{status:'needs_information'}}]};
+      for(const message of [original,'现金'])app.store.addConversation(message,'这笔要更新哪项记录、具体缺少的内容是什么？请结合本次对话已确认的信息核对。',state.revision,metadata);
+    }
+    const input={message:recover?'现金':original,conversationId:conversation.id,requestId:'windfall-income'},result=await request('/chat','POST',input);
+    assert.equal(result.status,200);assert.equal(result.body.state.assets[0].value,13000);assert.equal(result.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,2);
+    assert.equal(result.body.messages.at(-1).metadata.toolCalls[0].output.status,'applied');
+    const replay=await request('/chat','POST',input);assert.equal(replay.status,200);assert.equal(replay.body.state.assets[0].value,13000);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,2);
+  });
+});
 test('聊天接口处理云铝200股成本23.53的原话和旧追问补答，现金扣4706且请求重放不重复',async t=>{
   for(const recover of [false,true])await t.test(recover?'接续200股补答':'直接买入',async t=>{
     const original='我买了200 股云铝股份 帮我记录一下， 用的现金， 成本是 23.53';

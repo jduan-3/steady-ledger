@@ -282,7 +282,7 @@ export function openStore(directory) {
     conversations: () => db.prepare('SELECT c.*,COUNT(m.id) AS message_count FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id GROUP BY c.id ORDER BY c.updated_at DESC,c.rowid DESC').all(),
     deleteConversation: id => {
       db.exec('BEGIN IMMEDIATE');
-      try {db.prepare('DELETE FROM messages WHERE conversation_id=?').run(id);db.prepare('DELETE FROM conversations WHERE id=?').run(id);db.exec('COMMIT');}
+      try {db.prepare('DELETE FROM messages WHERE conversation_id=?').run(id);db.prepare('DELETE FROM conversations WHERE id=?').run(id);db.prepare('DELETE FROM kv WHERE key=? OR key LIKE ?').run('assistant_operations:'+id,'assistant_operations:'+id+':%');db.exec('COMMIT');}
       catch(error){db.exec('ROLLBACK');throw error;}
     },
     addConversation: (question, answer, revision, metadata) => {
@@ -299,7 +299,7 @@ export function openStore(directory) {
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },
-    clearMessages: () => db.exec('DELETE FROM messages; DELETE FROM conversations;'),
+    clearMessages: () => db.exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM kv WHERE key LIKE 'assistant_operations:%';"),
     clearReports: () => db.exec('DELETE FROM reports; DELETE FROM history;'),
     close: () => db.close()
   };

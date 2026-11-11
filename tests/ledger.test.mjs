@@ -166,6 +166,53 @@ test('红包收入支持一万元的中文金额，收支方向不能颠倒，�
   assert.equal((await call()).status,'applied');assert.equal(store.state().assets[0].value,20000);assert.equal((await call()).replayed,true);assert.equal(store.state().assets[0].value,20000);
   await assert.rejects(bind(question,'bad-side').recordCashFlow({evidence:question,side:'expense',amount:10000,description:'红包'}),/明确说明/);
 });
+test('意外现金原话允许空白差异和现金补答，保留原日期且重放不重复入账',async t=>{
+  for(const recover of [false,true])await t.test(recover?'旧对话现金补答':'原话多空格',async t=>{
+    const {store,bind}=setup(t),original='多了3000的意外现金   帮我加入一下',question='这笔要更新哪项记录、具体缺少的内容是什么？请结合本次对话已确认的信息核对。';
+    const history=recover?[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:question},{role:'user',content:'现金',created_at:now.toISOString()},{role:'assistant',content:question}]:[];
+    const call=()=>bind(recover?'现金':original,'windfall',{history,startedAt:now.getTime()+(recover?86400000:0)}).recordCashFlow({evidence:'多了3000的意外现金 帮我加入一下'+(recover?'；现金':''),side:'income',amount:3000,description:'意外现金收入'});
+    const result=await call();assert.equal(result.status,'applied');assert.equal(result.after.cash,13000);assert.equal(result.date,date);
+    const revision=store.state().revision;assert.equal((await call()).replayed,true);assert.equal(store.state().revision,revision);assert.equal(store.ledgerEntries().length,1);
+  });
+});
+test('现金收支支持金额与账户连续补答，多个账户不能由模型自行选择',async t=>{
+  const {store,bind}=setup(t),state=store.state();
+  state.assets[0].name='招商银行卡';state.assets.push({id:'second-cash',name:'备用金',type:'cash',currency:'CNY',value:500});store.save(state,state.revision);
+  const original='收到一笔意外现金，帮我记一下',history=[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'这笔收入金额是多少？'},{role:'user',content:'3000元'},{role:'assistant',content:'请选择现金账户。'}];
+  const args={evidence:original+'；3000元；现金',side:'income',amount:3000,description:'意外现金收入',cashAssetId:'second-cash'};
+  const first=await bind('现金','ambiguous',{history}).recordCashFlow(args);assert.equal(first.status,'needs_information');assert.equal(store.ledgerEntries().length,0);
+  history.push({role:'user',content:'现金'},{role:'assistant',content:first.question});
+  const result=await bind('备用金','selected',{history}).recordCashFlow({...args,evidence:'备用金'});
+  assert.equal(result.status,'applied');assert.equal(result.after.cash,3500);assert.equal(store.state().assets[0].value,10000);
+});
+test('现金补答不能复用已入账或无关指令，也不能绕过否定、假设、单位与币种核对',async t=>{
+  const {store,bind}=setup(t),before=store.state({raw:true}),original='多了3000的意外现金   帮我加入一下';
+  const args={evidence:original,side:'income',amount:3000,description:'意外现金收入'};
+  for(const answer of [{role:'assistant',content:'今天市场怎么样？'},...['applied','pending'].map(status=>({role:'assistant',content:'请选择现金账户。',metadata:{toolCalls:[{name:'record_cash_flow',output:{status}}]}}))]){
+    await assert.rejects(bind('现金','old-cash',{history:[{role:'user',content:original},answer]}).recordCashFlow(args),/当前明确|明确说明/);
+  }
+  for(const content of ['没有多了3000的意外现金，别入账','如果多了3000的意外现金，帮我算一下','多了3000的意外现金，不要加入账本']){
+    await assert.rejects(bind('现金','denied-cash',{history:[{role:'user',content},{role:'assistant',content:'请选择现金账户。'}]}).recordCashFlow(args),/被否定|讨论或计划/);
+  }
+  for(const content of ['收到3000股股票','多了3000份基金，现金不动','多了3000个现金账户']){
+    await assert.rejects(bind(content).recordCashFlow({...args,evidence:content}),/对应单位和用途|明确说明/);
+  }
+  await assert.rejects(bind('多了3000美元的意外现金').recordCashFlow({...args,currency:'CNY'}),/币种不一致/);
+  await assert.rejects(bind(original).recordCashFlow({...args,amount:30000}),/对应单位和用途/);
+  await assert.rejects(bind(original).recordCashFlow({...args,side:'expense'}),/明确说明/);
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+test('现金支出与外币收入补答保留方向和币种，否定账户补答不执行',async t=>{
+  const {store,bind}=setup(t),original='我花了300元买生活用品',history=[{role:'user',content:original},{role:'assistant',content:'记入哪个现金账户？'}];
+  const args={evidence:original,side:'expense',amount:300,description:'生活用品'};
+  for(const reply of ['不要用现金账户','现金账户不动'])await assert.rejects(bind(reply,'deny-account',{history}).recordCashFlow(args),/当前明确|被否定/);
+  assert.equal(store.ledgerEntries().length,0);
+  assert.equal((await bind('现金','cash-expense',{history}).recordCashFlow(args)).after.cash,9700);
+  const state=store.state();state.assets.push({id:'usd',name:'美元账户',type:'cash',currency:'USD',value:100});store.save(state,state.revision);
+  const foreign='多了3000的意外现金';
+  const result=await bind('美元','cash-currency',{history:[{role:'user',content:foreign},{role:'assistant',content:'这笔金额使用什么币种？'}]}).recordCashFlow({evidence:foreign+'；美元',side:'income',amount:3000,currency:'USD',cashAssetId:'usd',description:'意外现金'});
+  assert.equal(result.after.cash,3100);assert.equal(store.state().assets[0].value,9700);
+});
 test('没有当日净值就保存待入账，不能挪用昨日净值；净值披露后自动入账且重启不重复',async t=>{
   const {store,holding,service,dir}=setup(t);store.setKV('fund_nav:011609',{date:'2026-10-28',price:1,currency:'CNY',basis:'unit_nav'});
   const result=await holding('我今天用现有现金加仓1000元科创');assert.equal(result.status,'pending');assert.equal(store.state().assets[1].quantity,100);assert.equal(store.state().assets[0].value,10000);
