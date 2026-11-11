@@ -27,7 +27,7 @@ export function cashCalendar(state,{day=nowDate(state.preferences.timeZone),incl
     };
     if(dom===Math.min(profile.payday||1,end))add('预计工资',profile.income);
     if(profile.expenses==null)missing.add('每月生活支出待补');
-    else add('生活支出（日均）',-(round(profile.expenses*dom/end)-round(profile.expenses*(dom-1)/end)));
+    else if(dom===end&&(!profile.autoExpenses?.enabled||(date>=profile.autoExpenses.startsOn&&date.slice(0,7)>(profile.autoExpenses.lastPeriod||''))))add('必要生活支出（月末）',-profile.expenses);
     for(const debt of debts){
       if(debt.maturity&&date>debt.maturity)continue;
       if(debt.payment==null)missing.add(debt.name+'月供待补');
@@ -60,7 +60,7 @@ export function financialSnapshot(s,m,day) {
   return {day,netWorth:m.netWorth,totalAssets:m.totalAssets,debt:m.totalDebt,revision:s.revision,complete:m.complete,...(!m.complete?{missing:m.missing}:{}),rates:s.preferences.rates,positions};
 }
 
-export function monthlyBridge(month,base,rows,entries,credits) {
+export function monthlyBridge(month,base,rows,entries,credits,debits=[]) {
   const last=rows.at(-1),result={month,from:base?.day,to:last?.day,complete:false};
   if(!last||!base||base.day!==shift(month+'-01',-1)||[base,...rows].some(r=>r.complete!==true))return {...result,reason:'缺少完整的上月末或本月估值快照'};
   let fx=0,market=0,cash=0,adjustments=0,previous=base;
@@ -85,6 +85,7 @@ export function monthlyBridge(month,base,rows,entries,credits) {
     previous=row;
   }
   cash+=credits.filter(c=>c.revision>base.revision&&c.revision<=last.revision).reduce((s,c)=>s+c.amount,0);
+  cash-=debits.filter(d=>d.revision>base.revision&&d.revision<=last.revision).reduce((s,d)=>s+d.amount,0);
   const total=round(last.netWorth-base.netWorth);
   return {...result,complete:true,total,cash:round(cash),market:round(market),fx:round(fx),adjustments:round(adjustments),other:round(total-round(cash)-round(market)-round(fx)-round(adjustments))};
 }

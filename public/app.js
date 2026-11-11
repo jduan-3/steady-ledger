@@ -67,7 +67,7 @@ const chatDrafts=new Map();
 const currentChatRun=()=>chatActiveConversationId?data.conversation?.id===chatActiveConversationId:chatOriginViewEpoch===chatViewEpoch;
 function applyChatData(value,select=false) {
   if(value.config)data.config=value.config;
-  for(const key of ['state','metrics','rules','history','valuation','incomeSchedule','ledgerEntries','pendingEntries','reports','audit'])if(key in value)data[key]=value[key];
+  for(const key of ['state','metrics','rules','history','valuation','incomeSchedule','expenseSchedule','ledgerEntries','pendingEntries','reports','audit'])if(key in value)data[key]=value[key];
   if(value.conversations)data.conversations=value.conversations;
   if('run' in value)data.chatRun=value.run;
   if(select||!('conversation' in value)||value.conversation?.id===data.conversation?.id||(currentChatRun()&&!data.conversation)) {
@@ -131,6 +131,8 @@ async function loadWatchboard(){
   finally{watchboardBusy=false;if(route==='us-quotes')render();}
 }
 let cnMarketView=null,cnMarketBusy=false,cnMarketAttempted=false,cnMarketError='';
+let cnStockView='holdings',addingCNWatch=false;
+const refreshingCNWatch=new Set();
 const isCNMarket=()=>['cn-market','cn-etf'].includes(route);
 async function loadCNMarket(){
   if(cnMarketBusy)return;
@@ -144,8 +146,29 @@ async function loadCNMarket(){
 function cnMarketPage(){
   const options={loading:cnMarketBusy,error:cnMarketError};
   if(route==='cn-etf')return etfFlowsPageHTML(cnMarketView,options);
-  const assets=sortPortfolioAssets(data.state.assets.filter(a=>a.type==='stock'&&stockMarketGroup(a)==='CN'));
-  return cnMarketPageHTML(cnMarketView,options)+`<section class="card market-assets"><div class="card-header"><h2>我的沪深持仓</h2><p>${assets.length} 项股票</p></div>${assetTable(assets)}</section>`;
+  const watch=cnStockView==='watchlist',assets=watch?(data.state.cnStockWatchlist||[]):sortPortfolioAssets(data.state.assets.filter(a=>a.type==='stock'&&stockMarketGroup(a)==='CN'));
+  const action=watch?button('add-cn-watch','添加自选','plus','primary'):button('add-cn-stock','添加沪深股票','plus','primary');
+  const tabs=[['holdings','持仓'],['watchlist','自选']].map(([view,label])=>`<button type="button" class="filter${cnStockView===view?' active':''}" data-action="cn-stock-view" data-view="${view}" aria-pressed="${cnStockView===view}">${label}</button>`).join('');
+  const results=assets.length?(watch?cnStockWatchTable(assets):assetTable(assets)):watch
+    ?empty('还没有沪深自选','按股票名称或代码添加你想关注的标的。')
+    :empty('还没有登记沪深持仓','添加沪深股票后，可查看持仓估值和盈亏。');
+  return cnMarketPageHTML(cnMarketView,options)+`<section class="card market-assets cn-stock-card"><div class="card-header"><div><h2>${watch?'我的沪深自选':'我的沪深持仓'}</h2><p>${assets.length} 项股票</p></div>${action}</div><div class="filter-bar" role="group" aria-label="沪深股票视图">${tabs}</div>${results}</section>`;
+}
+function cnStockWatchTable(items){
+  return `<div class="table-scroll"><table><thead><tr><th>股票名称</th><th>最新股价</th><th>涨跌幅</th><th>行情时间</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>${items.map(({name,security,quote,quoteError})=>{
+    const pct=quote?quotePercent(quote):null,key=esc(security.key);
+    return `<tr><td><div class="asset-name"><span><strong>${esc(name)}</strong><small>${key}</small></span></div></td><td class="money">${quote?'¥ '+quoteNumber(quote.price):'待更新'}</td><td>${pct==null?'—':`<span class="price-movement ${movementClass(pct)}">${signed(pct)}%</span>`}</td><td class="asset-date" title="${esc(quoteError||quote?.source||'')}">${esc(quote?.time||'—')}${quoteError?'<small class="valuation-note">行情暂不可用</small>':''}</td><td><div class="actions-cell"><button type="button" class="text-btn row-action" data-action="refresh-cn-watch" data-key="${key}" aria-label="更新${esc(name)}行情" ${refreshingCNWatch.has(security.key)?'disabled':''}>更新</button><button type="button" class="text-btn row-action" data-action="remove-cn-watch" data-key="${key}" aria-label="移除自选${esc(name)}">移除</button></div></td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+async function refreshCNWatch(security){
+  if(refreshingCNWatch.has(security.key))return;
+  refreshingCNWatch.add(security.key);
+  try {
+    const result=await api('/market/quote',{method:'POST',body:{market:security.market,symbol:security.symbol}});
+    const item=data.state.cnStockWatchlist?.find(x=>x.security.key===security.key);
+    if(item){item.quote=result.quote;item.quoteError=result.attempt?.error||'';}
+  }catch(error){toast(error.message);}
+  finally{refreshingCNWatch.delete(security.key);if(auth.authenticated&&route==='cn-market'&&cnStockView==='watchlist')render();}
 }
 const revealedAmounts=new Set();
 function privateAmount(key,value,label,{hero=false,format=money}={}) {
@@ -588,7 +611,7 @@ function reconcileDialog(){
 }
 async function calendarDialog(plans=false){
   const c=await api('/planning/calendar?plans='+(plans?'1':'0'));
-  showDialog('未来 90 天现金流',`以 ${c.day} 已登记非受限现金为起点，含专项及应急预留，按人民币折算。`,`<p>起点 ${money(c.opening)} · 预计最低 ${money(c.low)}（${esc(c.lowDate)}）</p><button class="btn btn-soft" data-action="cash-calendar" data-plans="${plans?'0':'1'}">${plans?'移除买入计划假设':'计入待执行的买入计划'}</button><p>工资按发薪日、生活费按日均、月供按月末估算。已计入生活费的保费按日均分摊。</p>${c.missing.map(s=>`<p>${esc(s)}</p>`).join('')}<table><thead><tr><th>日期</th><th>收支</th><th>预计余额</th></tr></thead><tbody>${c.rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${r.events.map(e=>esc(e.name)+' '+money(e.amount)).join('<br>')||'—'}</td><td>${money(r.balance)}</td></tr>`).join('')}</tbody></table>`);
+  showDialog('未来 90 天现金流',`以 ${c.day} 已登记非受限现金为起点，含专项及应急预留，按人民币折算。`,`<p>起点 ${money(c.opening)} · 预计最低 ${money(c.low)}（${esc(c.lowDate)}）</p><button class="btn btn-soft" data-action="cash-calendar" data-plans="${plans?'0':'1'}">${plans?'移除买入计划假设':'计入待执行的买入计划'}</button><p>工资按发薪日、必要生活支出和月供按月末估算。已包含在生活支出中的保费不再重复计入。</p>${c.missing.map(s=>`<p>${esc(s)}</p>`).join('')}<table><thead><tr><th>日期</th><th>收支</th><th>预计余额</th></tr></thead><tbody>${c.rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${r.events.map(e=>esc(e.name)+' '+money(e.amount)).join('<br>')||'—'}</td><td>${money(r.balance)}</td></tr>`).join('')}</tbody></table>`);
 }
 async function monthlyDialog(month=today(data.state.preferences.timeZone).slice(0,7)){
   const m=await api('/reports/month?month='+encodeURIComponent(month));
@@ -627,11 +650,18 @@ function incomeScheduleHTML(){
   const credits=schedule.credits||[];
   return `<p class="inline-note">已启用工资自动记账 · ${esc(schedule.accountName)} · 每月 ${data.state.profile.payday} 日入账 ${money(schedule.amount)}${schedule.nextDate?' · 下次 '+esc(schedule.nextDate):''}。同月仅记一次，应用关闭期间会在下次启动补记。</p>${credits.length?`<details class="income-credit-history"><summary>最近工资入账记录</summary><div class="table-scroll"><table><thead><tr><th>工资月份</th><th>应入账日</th><th>记账金额</th><th>实际记账日</th></tr></thead><tbody>${credits.map(c=>`<tr><td>${esc(c.period)}</td><td>${esc(c.dueDate)}</td><td>${money(c.amount)}</td><td>${esc(new Intl.DateTimeFormat('en-CA',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(c.postedAt)))}</td></tr>`).join('')}</tbody></table></div></details>`:''}`;
 }
+function expenseScheduleHTML(){
+  const schedule=data.expenseSchedule;
+  if(!schedule?.enabled)return '<p class="inline-note">启用后，每月最后一天按必要生活支出金额扣减本地现金账本；同月只记一次，关闭期间会在下次启动补记。此金额作为整月生活支出统一记账，避免再逐笔重复登记。</p>';
+  const debits=schedule.debits||[];
+  const status=schedule.status==='blocked'?`<p class="error-text" role="status">${esc(schedule.message)}</p>`:`<p class="inline-note">已启用必要支出自动记账 · ${esc(schedule.accountName)} · 每月月末扣减 ${money(schedule.amount)}${schedule.nextDate?' · 下次 '+esc(schedule.nextDate):''}。同月只记一次，关闭期间会在下次启动补记；此金额已统一记账，不要再逐笔重复登记。</p>`;
+  return status+(debits.length?`<details class="income-credit-history"><summary>最近必要支出扣减记录</summary><div class="table-scroll"><table><thead><tr><th>支出月份</th><th>应扣减日</th><th>扣减金额</th><th>实际记账日</th></tr></thead><tbody>${debits.map(d=>`<tr><td>${esc(d.period)}</td><td>${esc(d.dueDate)}</td><td>${money(-d.amount)}</td><td>${esc(new Intl.DateTimeFormat('en-CA',{timeZone:data.state.preferences.timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(d.postedAt)))}</td></tr>`).join('')}</tbody></table></div></details>`:'');
+}
 function cashflowPage() {
-  const p=data.state.profile,m=data.metrics,b=p.background||{},auto=p.autoIncome||{},cash=data.state.assets.filter(a=>a.type==='cash'&&a.currency==='CNY'&&!a.restricted);
+  const p=data.state.profile,m=data.metrics,b=p.background||{},auto=p.autoIncome||{},expenseAuto=p.autoExpenses||{},cash=data.state.assets.filter(a=>a.type==='cash'&&a.currency==='CNY'&&!a.restricted);
   return `${heading('收入与计划','',button('cash-calendar','90 天现金流','report'))}
     ${ledgerEntriesHTML()}
-    <div class="two-columns cashflow-layout"><form class="card form-card" id="profile-form"><h2>每月现金流</h2><p class="form-intro">填写税后经常性收入与必要开支。奖金等不确定收入暂不计入。</p><div class="form-grid">${field('税后经常性月收入 / 元','income',p.income,{placeholder:'例如 30000'})}${field('每月必要生活支出 / 元','expenses',p.expenses,{placeholder:'不含贷款月供'})}${select('收入稳定程度','incomeStability',p.incomeStability,[['unknown','尚未说明'],['stable','固定工资为主'],['variable','收入有波动'],['none','暂时无收入']])}${field('每月发薪日','payday',p.payday,{min:1,max:31,step:1})}<div class="full">${checkbox('incomeAutoCredit','每月按发薪日自动记入现金',auto.enabled)}</div>${select('工资入账账户','incomeCashAssetId',auto.cashAssetId||cash[0]?.id||'',[['','请选择现金账户'],...cash.map(a=>[a.id,a.name+' · CNY'])])}${field('自动入账起始日期','incomeStartsOn',auto.startsOn||today(data.state.preferences.timeZone),{type:'date',help:'从此日期起的发薪日开始记账；遇到不存在的日期按月末。'})}<div class="full">${incomeScheduleHTML()}</div>${field('应急储备目标 / 月','emergencyMonths',p.emergencyMonths,{help:'初始建议值可调整，属于现代适配，不是原著要求。',full:true})}</div><div class="form-actions">${draftNotice('profile-form')}<button class="btn btn-primary" type="submit">保存现金流</button></div></form>
+    <div class="two-columns cashflow-layout"><form class="card form-card" id="profile-form"><h2>每月现金流</h2><p class="form-intro">填写税后经常性收入与必要开支。奖金等不确定收入暂不计入。</p><div class="form-grid">${field('税后经常性月收入 / 元','income',p.income,{placeholder:'例如 30000'})}${field('每月必要生活支出 / 元','expenses',p.expenses,{placeholder:'不含贷款月供'})}${select('收入稳定程度','incomeStability',p.incomeStability,[['unknown','尚未说明'],['stable','固定工资为主'],['variable','收入有波动'],['none','暂时无收入']])}${field('每月发薪日','payday',p.payday,{min:1,max:31,step:1})}<div class="full">${checkbox('incomeAutoCredit','每月按发薪日自动记入现金',auto.enabled)}</div>${select('工资入账账户','incomeCashAssetId',auto.cashAssetId||cash[0]?.id||'',[['','请选择现金账户'],...cash.map(a=>[a.id,a.name+' · CNY'])])}${field('自动入账起始日期','incomeStartsOn',auto.startsOn||today(data.state.preferences.timeZone),{type:'date',help:'从此日期起的发薪日开始记账；遇到不存在的日期按月末。'})}<div class="full">${incomeScheduleHTML()}</div><div class="full">${checkbox('expensesAutoDebit','每月月末自动从现金扣除必要生活支出',expenseAuto.enabled)}</div>${select('必要支出扣减账户','expensesCashAssetId',expenseAuto.cashAssetId||auto.cashAssetId||cash[0]?.id||'',[['','请选择现金账户'],...cash.map(a=>[a.id,a.name+' · CNY'])])}${field('自动扣减起始日期','expensesStartsOn',expenseAuto.startsOn||today(data.state.preferences.timeZone),{type:'date',help:'从此日期起，每个月末扣减一次完整月支出，不按日折算。'})}<div class="full">${expenseScheduleHTML()}</div>${field('应急储备目标 / 月','emergencyMonths',p.emergencyMonths,{help:'初始建议值可调整，属于现代适配，不是原著要求。',full:true})}</div><div class="form-actions">${draftNotice('profile-form')}<button class="btn btn-primary" type="submit">保存现金流</button></div></form>
     <div class="card form-card"><h2>现金流汇总</h2><p class="form-intro">按当前已登记资料计算</p><div class="cash-flow-line"><span>税后经常性收入</span><b class="money">${money(m.income)}</b></div><div class="cash-flow-line"><span>已登记生活支出</span><b class="money">${money(m.baseExpenses)}</b></div><div class="cash-flow-line"><span>额外续期保费（月均）</span><b class="money">${money(m.insuranceExpenseComplete?m.insuranceExpense:null)}</b></div><div class="cash-flow-line"><span>每月债务偿还</span><b class="money">${money(m.paymentComplete?m.payment:null)}</b></div><div class="cash-flow-total"><span>月度经常性结余</span><strong class="money ${m.surplus!==null&&m.surplus<0?'negative':''}">${privateAmount('cashflow-surplus',m.surplus,'月度经常性结余')}</strong></div><p class="inline-note">保费只补计未包含在生活开支中的部分；年缴保费仍须准备缴费日现金。投资投入、可选消费和一次性支出需另行考虑；未到账收入不计入可支配现金。</p></div>
     <div class="card form-card full"><div class="wealth-top"><h2>未来支出计划</h2><button class="text-btn" data-action="add-upcoming">${icon('plus',13)} 添加计划</button></div>${data.state.upcoming.length?`<p class="plan-summary">${data.state.upcoming.length} 项计划 · 计划金额合计 <b class="money">${money(data.state.upcoming.reduce((sum,u)=>sum+u.amount,0))}</b></p>`+data.state.upcoming.slice().sort((a,b)=>a.date.localeCompare(b.date)).map(u=>`<div class="upcoming-item"><div class="upcoming-name"><strong>${esc(u.name)}</strong><small>${esc(u.date)} · ${u.date<today()?'<span class="plan-date-past">日期已过，请核对</span>':'计划支出'}</small></div><div class="upcoming-end"><span class="money">${money(u.amount)}</span><div class="actions-cell"><button class="text-btn row-action" data-action="edit-upcoming" data-id="${esc(u.id)}" aria-label="编辑计划${esc(u.name)}">编辑</button><button class="text-btn row-action" data-action="delete-upcoming" data-id="${esc(u.id)}" aria-label="删除计划${esc(u.name)}">删除</button></div></div></div>`).join(''):'<p class="form-intro" style="margin:17px 0 0">学费、装修或医疗等近期必要支出，提前列在这里。请同时在现金账户中设置专项预留。</p>'}</div>
     <form class="card form-card background-card full" id="background-form"><h2>关于你 <span class="pill info">选填</span></h2><p class="form-intro">让建议考虑你的家庭、生活阶段和目标。称呼可用昵称；无需填写身份证、账号、保单号或精确住址。启用 AI 后，这些资料会随已授权摘要发送。</p><div class="form-grid">
@@ -756,22 +786,33 @@ function dataSettings() {
 let stockResults=[],stockSearchEpoch=0,stockLookupTimer;
 const stockQuoteCache=new Map();
 const stockMarkets=[['ALL','全部市场'],['SH','沪市 A 股'],['SZ','深市 A 股'],['HK','港股'],['US','美股']];
+const cnStockMarkets=[['CN','沪深市场'],...stockMarkets.filter(([market])=>['SH','SZ'].includes(market))];
+function cnWatchDialog(){
+  clearTimeout(stockLookupTimer);stockSearchEpoch++;stockResults=[];
+  showDialog('添加沪深自选','按股票名称或代码搜索，选择要关注的股票。',`<form id="cn-watch-form"><div class="fund-lookup">${field('股票名称或代码','name','',{type:'search',required:true,maxlength:80,placeholder:'例如：中国平安、601318'})}<button type="submit" class="btn btn-secondary">搜索</button></div><div class="security-results" data-stock-results role="status" aria-live="polite"></div></form>`);
+}
 function readAssetDraft(){
   const f=new FormData($('#asset-form')),id=f.get('id'),prev=data.state.assets.find(a=>a.id===id)||{},market=f.get('stockMarket'),symbol=f.get('stockSymbol');
-  return {...prev,id:id||undefined,type:f.get('type'),name:f.get('name'),account:f.get('account'),currency:f.get('currency'),value:numberValue(f,'value'),asOf:f.get('asOf'),quantity:numberValue(f,'quantity'),unit:f.get('unit'),inPool:f.has('inPool'),autoPrice:f.has('autoPrice'),costEntryMode:f.get('costMode')||'average',costEntryAmount:numberValue(f,'costAmount'),costReferenceValue:numberValue(f,'costReferenceValue'),confirmPositionValue:f.has('confirmPositionValue'),fund:f.get('type')==='fund'?{...(prev.fund?.code===f.get('fundCode')?prev.fund:{}),code:f.get('fundCode')||'',autoNav:f.has('autoNav')}:undefined,stockMarket:market,security:symbol?{market,symbol,key:market+'.'+symbol}:null};
+  return {...prev,id:id||undefined,type:f.get('type'),name:f.get('name'),account:f.get('account'),currency:f.get('currency'),value:numberValue(f,'value'),asOf:f.get('asOf'),quantity:numberValue(f,'quantity'),unit:f.get('unit'),inPool:f.has('inPool'),autoPrice:f.has('autoPrice'),costEntryMode:f.get('costMode')||'average',costEntryAmount:numberValue(f,'costAmount'),costReferenceValue:numberValue(f,'costReferenceValue'),confirmPositionValue:f.has('confirmPositionValue'),fund:f.get('type')==='fund'?{...(prev.fund?.code===f.get('fundCode')?prev.fund:{}),code:f.get('fundCode')||'',autoNav:f.has('autoNav')}:undefined,cnStock:f.has('cnStock'),stockMarket:market,security:symbol?{market,symbol,key:market+'.'+symbol}:null};
 }
-async function findStock(){
-  const form=$('#asset-form');if(!form)return;
+async function findStock(watch=false){
+  const selector=watch?'#cn-watch-form':'#asset-form',form=$(selector);if(!form)return;
   const f=new FormData(form);if(f.get('type')&&f.get('type')!=='stock')return;
-  const query=f.get('name')?.trim(),market=f.get('stockMarket')||'ALL',epoch=++stockSearchEpoch;
+  const query=f.get('name')?.trim(),market=watch?'CN':f.get('stockMarket')||'ALL',epoch=++stockSearchEpoch;
   if(!query)return toast('请输入股票名称或代码');
-  $('[data-stock-results]').innerHTML='<p class="inline-note" role="status">正在搜索…</p>';
+  const results=$('[data-stock-results]');
+  stockResults=[];
+  results.innerHTML='<p class="inline-note" role="status">正在搜索…</p>';
   try{
     const result=await api('/market/search?q='+encodeURIComponent(query)+'&market='+encodeURIComponent(market));
-    if(epoch!==stockSearchEpoch||$('#asset-form')!==form)return;
+    if(epoch!==stockSearchEpoch||$(selector)!==form)return;
     stockResults=result.items;
-    $('[data-stock-results]').innerHTML=stockResults.length?stockResults.map((x,i)=>`<button type="button" class="security-result" data-action="select-security" data-index="${i}"><span>${esc(x.name)}<small>${esc(stockMarkets.find(([m])=>m===x.market)?.[1]||x.market)} · ${esc(x.currency)}</small></span><b>${esc(x.key)}</b></button>`).join(''):`<p class="inline-note">${esc(result.message||'未找到匹配股票，可试试股票代码或选择全部市场。')}</p>`;
-  }catch(e){if(epoch===stockSearchEpoch&&$('#asset-form')===form)$('[data-stock-results]').innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+    results.innerHTML=stockResults.length?stockResults.map((x,i)=>{
+      const watched=watch&&data.state.cnStockWatchlist?.some(item=>item.security.key===x.key);
+      const label=watch?(watched?'已自选':'加入自选'):x.key;
+      return `<button type="button" class="security-result" data-action="${watch?'select-cn-watch':'select-security'}" data-index="${i}" ${watched?'disabled':''}><span>${esc(x.name)}<small>${esc(watch?x.key:stockMarkets.find(([m])=>m===x.market)?.[1]||x.market)} · ${esc(x.currency)}</small></span><b>${esc(label)}</b></button>`;
+    }).join(''):`<p class="inline-note">${esc(result.message||((watch||f.has('cnStock'))?'未找到匹配股票，可试试其他名称或股票代码。':'未找到匹配股票，可试试股票代码或选择全部市场。'))}</p>`;
+  }catch(e){if(epoch===stockSearchEpoch&&$(selector)===form)results.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
 }
 function costFields(a){
   if(!['stock','fund'].includes(a.type))return '';
@@ -812,15 +853,15 @@ function investmentHTML(a){
   return `<span class="price-movement ${movementClass(m.profit)}" title="当前市值减持仓成本，不含现金分红"><strong>${signed(m.profit)} ${esc(a.currency)}</strong>${m.returnPercent==null?'':`<small>${signed(m.returnPercent)}%</small>`}</span>`;
 }
 function assetDialog(id, draft) {
-  clearTimeout(stockLookupTimer);stockSearchEpoch++;
+  clearTimeout(stockLookupTimer);stockSearchEpoch++;stockResults=[];
   const a=draft||data.state.assets.find(x=>x.id===id)||{type:'cash',currency:'CNY',asOf:today(),inPool:true,emergency:0,earmarked:0},i=a.insurance||{},autoStock=a.type==='stock'&&(a.autoPrice===true||(!id&&a.autoPrice!==false)),auto=(a.type==='fund'&&(a.fund?.autoNav===true||(!id&&!a.fund)))||autoStock;
-  const units=a.type==='stock'?'股':a.type==='fund'?'份':'';
-  const quantity=units?field('持有数量 / '+units,'quantity',a.quantity,{required:auto})+`<input type="hidden" name="unit" value="${units}"/>`:a.type.startsWith('gold')?field('持有数量','quantity',a.quantity)+select('单位','unit',a.unit||'盎司',[['盎司','盎司'],['克','克']]):'';
-  showDialog(id?'编辑资产':'记录资产','',`<form id="asset-form"><input type="hidden" name="id" value="${esc(id||'')}"/><div class="form-grid">
-  ${field(a.type==='stock'?'股票名称或代码':'资产名称','name',a.name,{type:'text',required:true,full:true,placeholder:a.type==='stock'?'例如：中国平安、601318、AAPL':''})}
-  ${select('资产类型','type',a.type,Object.entries(typeNames))}${field('所属账户','account',a.account,{type:'text'})}
-  ${a.type==='stock'?`${select('交易市场','stockMarket',a.security?.market||a.stockMarket||'ALL',stockMarkets)}<div class="form-field"><span>查找股票</span>${button('search-security','搜索股票','search','secondary','type="button"')}</div><div class="security-results full" data-stock-results></div><input type="hidden" name="stockSymbol" value="${esc(a.security?.symbol||'')}"/>${a.security?`<div class="security-selected full">${icon('check',15)} ${esc(a.name)} · ${esc(a.security.key)} · ${esc(a.currency)}</div>`:''}<div class="full">${checkbox('autoPrice','自动更新股票行情',autoStock)}</div><p class="inline-note full" data-stock-status>${a.security?'休市时使用最近交易日行情。':'搜索后选择准确的股票与市场。'}</p>`:''}
-  ${auto?`<input type="hidden" name="currency" value="${a.type==='stock'?esc(a.currency):'CNY'}"/>`:select('币种','currency',a.currency,[['CNY','人民币'],['HKD','港币'],['USD','美元']])}
+  const units=a.type==='stock'?'股':a.type==='fund'?'份':'',cnStock=a.cnStock===true;
+  const quantity=units?field('持有数量 / '+units,'quantity',a.quantity,{required:auto||cnStock})+`<input type="hidden" name="unit" value="${units}"/>`:a.type.startsWith('gold')?field('持有数量','quantity',a.quantity)+select('单位','unit',a.unit||'盎司',[['盎司','盎司'],['克','克']]):'';
+  showDialog(cnStock?'添加沪深股票':id?'编辑资产':'记录资产','',`<form id="asset-form"><input type="hidden" name="id" value="${esc(id||'')}"/><div class="form-grid">
+  ${field(a.type==='stock'?'股票名称或代码':'资产名称','name',a.name,{type:'text',required:true,full:true,placeholder:cnStock?'例如：中国平安、601318':a.type==='stock'?'例如：中国平安、601318、AAPL':''})}
+  ${cnStock?'<input type="hidden" name="cnStock" value="1"/><input type="hidden" name="type" value="stock"/>':select('资产类型','type',a.type,Object.entries(typeNames))}${field('所属账户','account',a.account,{type:'text'})}
+  ${a.type==='stock'?`${select('交易市场','stockMarket',a.security?.market||a.stockMarket||(cnStock?'CN':'ALL'),cnStock?cnStockMarkets:stockMarkets)}<div class="form-field"><span>查找股票</span>${button('search-security','搜索股票','search','secondary','type="button"')}</div><div class="security-results full" data-stock-results></div><input type="hidden" name="stockSymbol" value="${esc(a.security?.symbol||'')}"/>${a.security?`<div class="security-selected full">${icon('check',15)} ${esc(a.name)} · ${esc(a.security.key)} · ${esc(a.currency)}</div>`:''}<div class="full">${checkbox('autoPrice','自动更新股票行情',autoStock)}</div><p class="inline-note full" data-stock-status>${a.security?'休市时使用最近交易日行情。':'搜索后选择准确的股票与市场。'}</p>`:''}
+  ${auto||cnStock?`<input type="hidden" name="currency" value="${a.type==='stock'?esc(a.currency):'CNY'}"/>`:select('币种','currency',a.currency,[['CNY','人民币'],['HKD','港币'],['USD','美元']])}
   ${auto?`<input type="hidden" name="value" value="${esc(a.value??'')}"/>`:field(a.type==='insurance'?'当前保单价值':a.type==='gold_margin'?'账户净权益':'当前估值','value',a.value,{required:a.type!=='insurance',min:a.type==='gold_margin'?-1e14:0})}
   ${auto?`<input type="hidden" name="asOf" value="${esc(a.asOf||today())}"/>`:''}${quantity}
   ${costFields(a)}
@@ -1007,6 +1048,38 @@ document.addEventListener('click',async event=>{
     if(action==='generate-market-brief'){const result=await api('/market-briefs/generate',{method:'POST',body:{market:target.dataset.market}});applyMarketBriefs(result);pollMarketBriefs();return toast('市场简报正在生成');}
     if(action==='toggle-cn-market'){event.preventDefault();cnMarketExpanded=!cnMarketExpanded;return routeTo('cn-market');}
     if(action==='refresh-cn-market')return loadCNMarket();
+    if(action==='cn-stock-view'){
+      if(['holdings','watchlist'].includes(target.dataset.view)){cnStockView=target.dataset.view;render();$('[data-action="cn-stock-view"][aria-pressed="true"]')?.focus();}
+      return;
+    }
+    if(action==='add-cn-stock')return assetDialog(undefined,{type:'stock',currency:'CNY',inPool:true,cnStock:true});
+    if(action==='add-cn-watch')return cnWatchDialog();
+    if(action==='select-cn-watch'){
+      const selected=stockResults[Number(target.dataset.index)];
+      if(addingCNWatch||!selected||!['SH','SZ'].includes(selected.market))return;
+      const next=structuredClone(data.state);next.cnStockWatchlist??=[];
+      if(next.cnStockWatchlist.some(item=>item.security.key===selected.key))return toast('这只股票已在自选中');
+      next.cnStockWatchlist.push({name:selected.name,security:selected});
+      const form=$('#cn-watch-form');
+      addingCNWatch=true;target.disabled=true;
+      try {
+        await saveState(next,'添加沪深自选 · '+selected.name);
+        if($('#cn-watch-form')===form&&$('#dialog').open)closeDialog();
+        toast('已加入自选');
+        if(!data.state.cnStockWatchlist?.find(item=>item.security.key===selected.key)?.quote)void refreshCNWatch(selected);
+      }finally{addingCNWatch=false;target.disabled=false;}
+      return;
+    }
+    if(action==='refresh-cn-watch'||action==='remove-cn-watch'){
+      const item=data.state.cnStockWatchlist?.find(x=>x.security.key===target.dataset.key);
+      if(!item)return;
+      target.disabled=true;
+      if(action==='refresh-cn-watch'){await refreshCNWatch(item.security);return;}
+      const next=structuredClone(data.state);
+      next.cnStockWatchlist=next.cnStockWatchlist.filter(x=>x.security.key!==item.security.key);
+      await saveState(next,'移除沪深自选 · '+item.name);
+      return toast('已移除自选');
+    }
     if(action==='toggle-us-market'){event.preventDefault();usMarketExpanded=!usMarketExpanded;return routeTo('us-market');}
     if(action==='watchboard-mode'){if(watchboardBusy||!['latest','close'].includes(target.dataset.mode))return;watchboardMode=target.dataset.mode;return loadWatchboard();}
     if(action==='refresh-watchboard')return loadWatchboard();
@@ -1127,7 +1200,7 @@ document.addEventListener('click',async event=>{
     if(action==='logout'){await api('/auth/logout',{method:'POST',body:{}});auth.authenticated=false;formDrafts.clear();renderAuth();return;}
   }catch(e){toast(e.message);if(target.isConnected)target.disabled=false;}
 });
-document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#fund-watch-form [name=lookup]')){fundSearchEpoch++;clearTimeout(fundLookupTimer);if(!event.isComposing)fundLookupTimer=setTimeout(()=>findFund(),350);return;}if(event.target.matches('#fund-search')){fundQuery=event.target.value;paintFundResults();return;}if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
+document.addEventListener('input',event=>{rememberFormDraft(event);if(event.target.matches('#cn-watch-form [name=name]')){stockSearchEpoch++;stockResults=[];$('[data-stock-results]').innerHTML='';return;}if(event.target.matches('#fund-watch-form [name=lookup]')){fundSearchEpoch++;clearTimeout(fundLookupTimer);if(!event.isComposing)fundLookupTimer=setTimeout(()=>findFund(),350);return;}if(event.target.matches('#fund-search')){fundQuery=event.target.value;paintFundResults();return;}if(event.target.matches('#watchboard-search')){watchboardQuery=event.target.value;paintWatchboard();return;}if(event.target.matches('#asset-search')){assetQuery=event.target.value;paintAssetResults();return;}if(event.target.matches('#asset-form [name=quantity]')){const input=$('#asset-form [name=costAmount]');if(input){input.value='';input.placeholder=$('#asset-form [name=costMode]').value==='average'?'股数变化后，请重新填写每股成本':'数量变化后，可重新填写成本或盈亏';}const reference=$('#asset-form [name=costReferenceValue]');if(reference)reference.value='';}if(event.target.matches('#chat-form textarea')){chatDraft=event.target.value;fitChatInput(event.target);}if(!event.isComposing&&event.target.matches('#asset-form [name=name]')&&$('#asset-form [name=type]').value==='stock'){$('#asset-form [name=stockSymbol]').value='';stockSearchEpoch++;clearTimeout(stockLookupTimer);stockLookupTimer=setTimeout(()=>findStock(),350);}});
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
   if(event.target.matches('[data-fund-reference-select]')){selectReferencePoint(event.target.dataset.chart,Number(event.target.value),'select');return;}
@@ -1161,6 +1234,7 @@ document.addEventListener('submit',async event=>{
   const formId=form.getAttribute('id'), f=new FormData(form), submits=[...form.querySelectorAll('[type=submit]')];submits.forEach(button=>button.disabled=true);
   try{
     if(formId==='auth-form'){await api(auth.initialized?'/auth/login':'/auth/setup',{method:'POST',body:{password:f.get('password')}});auth.authenticated=true;auth.initialized=true;data=await api('/bootstrap');render();return;}
+    if(formId==='cn-watch-form')return await findStock(true);
     if(formId==='ledger-filter')return await ledgerDialog(Object.fromEntries(f));
     if(formId==='monthly-bridge')return await monthlyDialog(f.get('month'));
     if(formId==='plan-execution'){
@@ -1198,6 +1272,10 @@ document.addEventListener('submit',async event=>{
     if(formId==='asset-form'){
       const next=structuredClone(data.state), id=f.get('id')||crypto.randomUUID(),type=f.get('type');
       const item={...next.assets.find(a=>a.id===id),id,type,name:f.get('name'),account:f.get('account'),currency:f.get('currency'),value:numberValue(f,'value'),asOf:f.get('asOf')||today(),inPool:f.has('inPool'),restricted:f.has('restricted'),emergency:type==='cash'?numberValue(f,'emergency')||0:0,earmarked:type==='cash'?numberValue(f,'earmarked')||0:0,equityRatio:type==='fund'?numberValue(f,'equityRatio'):type==='insurance'?numberValue(f,'insuranceEquityRatio'):null,quantity:numberValue(f,'quantity'),unit:f.get('unit'),issuer:f.get('issuer'),notional:type==='gold_margin'?numberValue(f,'notional'):null,available:type==='gold_margin'?numberValue(f,'available'):null,direction:f.get('direction')};
+      if(f.has('cnStock')){
+        if(type!=='stock'||!['SH','SZ'].includes(f.get('stockMarket'))||!f.get('stockSymbol'))throw new Error('请先搜索并选择沪深股票');
+        if(item.quantity==null)throw new Error('请填写持有股数');
+      }
       if(type==='stock'&&f.has('autoPrice')&&!f.get('stockSymbol'))throw new Error('请先搜索并选择股票');
       if(type==='stock'&&f.get('stockSymbol')){item.security={market:f.get('stockMarket'),symbol:f.get('stockSymbol')};item.autoPrice=f.has('autoPrice');}else{delete item.security;delete item.autoPrice;}
       if(type==='fund'&&f.get('fundCode')){
@@ -1222,7 +1300,7 @@ document.addEventListener('submit',async event=>{
       await saveState(next,'更新负债记录');closeDialog();return toast('负债已保存');
     }
     if(formId==='profile-form'){
-      const next=structuredClone(data.state);next.profile={...next.profile,income:numberValue(f,'income'),expenses:numberValue(f,'expenses'),payday:numberValue(f,'payday'),emergencyMonths:numberValue(f,'emergencyMonths'),incomeStability:f.get('incomeStability'),autoIncome:{...next.profile.autoIncome,enabled:f.has('incomeAutoCredit'),cashAssetId:f.get('incomeCashAssetId')||'',startsOn:f.get('incomeStartsOn')||''}};await saveState(next,'更新每月收入与支出',formId);return toast('现金流资料已保存');
+      const next=structuredClone(data.state);next.profile={...next.profile,income:numberValue(f,'income'),expenses:numberValue(f,'expenses'),payday:numberValue(f,'payday'),emergencyMonths:numberValue(f,'emergencyMonths'),incomeStability:f.get('incomeStability'),autoIncome:{...next.profile.autoIncome,enabled:f.has('incomeAutoCredit'),cashAssetId:f.get('incomeCashAssetId')||'',startsOn:f.get('incomeStartsOn')||''},autoExpenses:{...next.profile.autoExpenses,enabled:f.has('expensesAutoDebit'),cashAssetId:f.get('expensesCashAssetId')||'',startsOn:f.get('expensesStartsOn')||''}};await saveState(next,'更新每月收入与支出',formId);return toast('现金流资料已保存');
     }
     if(formId==='upcoming-form'){
       const next=structuredClone(data.state),id=f.get('id'),index=next.upcoming.findIndex(u=>u.id===id);

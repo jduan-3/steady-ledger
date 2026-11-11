@@ -159,6 +159,31 @@ test('基金盘中参考接口需要登录，读取缓存和刷新均不改变�
   const component=await fetch(base+'/fund-reference.js');assert.equal(component.status,200);assert.match(await component.text(),/fundReferenceHTML/);
 });
 const toolReply=(name,args)=>({role:'assistant',content:null,tool_calls:[{id:'call_test',type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+test('聊天接口处理云铝200股成本23.53的原话和旧追问补答，现金扣4706且请求重放不重复',async t=>{
+  for(const recover of [false,true])await t.test(recover?'接续200股补答':'直接买入',async t=>{
+    const original='我买了200 股云铝股份 帮我记录一下， 用的现金， 成本是 23.53';
+    const upstream=await modelServer(t,(payload,n)=>{
+      if(n===1)return toolReply('record_holding_change',{query:'云铝股份',evidence:recover?original+'；200 股':original,side:'buy',quantity:200,price:23.53,cashSource:'registered',currency:'CNY',...(recover?{}:{key:'SZ.000807'})});
+      const output=JSON.parse(payload.messages.at(-1).content);
+      assert.equal(output.status,'applied');assert.equal(output.amount,4706);assert.equal(output.after.quantity,201);assert.equal(output.after.cash,5294);
+      return {content:'已记录云铝股份买入200股，每股23.53元，现金扣除4706元，未含未提供的费用。'};
+    });
+    const {request,app}=await setup(t,{disableAuth:true}),state=app.store.state();
+    state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:10000},{id:'yunlv',name:'云铝股份',type:'stock',security:{market:'SZ',symbol:'000807'},currency:'CNY',value:20,quantity:1,unit:'股',costBasis:{amount:20,quantity:1,currency:'CNY'}}];
+    app.store.save(state,state.revision);
+    await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
+    const config=app.store.config(),conversation=app.store.createConversation(config.scopeId,original);
+    if(recover){
+      const metadata={aiChat:true,scopeId:config.scopeId,conversationId:conversation.id,toolCalls:[{name:'record_holding_change',status:'complete',output:{status:'needs_information'}}]};
+      for(const message of [original,'200 股'])app.store.addConversation(message,'这笔的金额或股数／份额是多少？请核对数字的用途和单位。',state.revision,metadata);
+    }
+    const input={message:recover?'200 股':original,conversationId:conversation.id,requestId:'buy-yunlv'},result=await request('/chat','POST',input);
+    assert.equal(result.status,200);assert.equal(result.body.state.assets[1].quantity,201);assert.equal(result.body.state.assets[0].value,5294);assert.equal(result.body.ledgerEntries.length,1);
+    assert.equal(result.body.messages.at(-1).metadata.toolCalls[0].output.status,'applied');assert.equal(upstream.calls.length,2);
+    const replay=await request('/chat','POST',input);
+    assert.equal(replay.status,200);assert.equal(replay.body.state.assets[0].value,5294);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,2);
+  });
+});
 test('harness 将全部卖了记为清仓，并能从旧版重复追问中用南方啊接续，不重复入账',async t=>{
   for(const recover of [false,true])await t.test(recover?'接续旧对话':'直接清仓',async t=>{
     const original='然后我把南方全部卖了，2026-10-29成交',message=recover?'南方啊':original;
@@ -628,4 +653,22 @@ test('harness 删除工具按范围补答执行，持仓自选独立且不会再
   const second=await request('/chat','POST',{message:'自选',conversationId,requestId:'remove-watch'});
   assert.equal(second.status,200);assert.equal(second.body.state.fundWatchlist.length,0);assert.equal(second.body.state.assets.length,1);assert.match(second.body.content,/已移除/);assert.equal(upstream.calls.length,3);
   const replay=await request('/chat','POST',{message:'自选',conversationId,requestId:'remove-watch'});assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,3);
+});
+
+test('保存月末支出设置后执行到期扣减，刷新与重复保存不重复，页面返回记账状态',async t=>{
+  const {request}=await setup(t,{disableAuth:true});
+  let view=(await request('/bootstrap')).body;
+  view.state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:30000}];
+  view.state.profile.expenses=5500;
+  const day=new Intl.DateTimeFormat('en-CA',{timeZone:view.state.preferences.timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  const previousEnd=new Date(Date.UTC(+day.slice(0,4),+day.slice(5,7)-1,0)).toISOString().slice(0,10);
+  view.state.profile.autoExpenses={enabled:true,cashAssetId:'cash',startsOn:previousEnd,lastPeriod:''};
+  const dueCount=+day.slice(-2)===new Date(Date.UTC(+day.slice(0,4),+day.slice(5,7),0)).getUTCDate()?2:1;
+  let response=await request('/state','PUT',{state:view.state,revision:view.state.revision});
+  assert.equal(response.status,200);view=response.body;
+  assert.equal(view.state.assets[0].value,30000-dueCount*5500);
+  assert.equal(view.expenseSchedule.debits.length,dueCount);
+  response=await request('/state','PUT',{state:view.state,revision:view.state.revision});
+  assert.equal(response.status,200);assert.equal(response.body.state.assets[0].value,view.state.assets[0].value);
+  assert.equal((await request('/bootstrap')).body.expenseSchedule.debits.length,dueCount);
 });

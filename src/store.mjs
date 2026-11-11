@@ -10,6 +10,7 @@ import { isoDay } from './securities.mjs';
 import { inferredCostBasis, applyInvestmentInfo } from './investments.mjs';
 import { financialSnapshot, monthlyBridge } from './planning.mjs';
 import { incomePlan } from './income.mjs';
+import { expensePlan } from './expenses.mjs';
 
 export function openStore(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -85,10 +86,10 @@ export function openStore(directory) {
     const q=getKV('fund_nav:'+a.fund.code);
     if(q){if(q.previous)recordPrice('FUND.'+a.fund.code,{...q.previous,code:a.fund.code,currency:'CNY',basis:'unit_nav',source:q.source});recordPrice('FUND.'+a.fund.code,q);}
   }
-  const history = () => db.prepare('SELECT payload FROM history ORDER BY day DESC LIMIT 30').all().map(r => {const {positions,rates,ledgerCursor,credits,...summary}=JSON.parse(r.payload);return summary;}).reverse();
-  const snapshot = (s, day=nowDate(s.preferences.timeZone)) => { const m = calculate(s); db.prepare('INSERT INTO history(day,payload) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day, JSON.stringify({...financialSnapshot(s,m,day),ledgerCursor:ledgerCursor(),credits:getKV('income_credits',[]).filter(c=>c.period>=day.slice(0,7)||c.postedAt?.slice(0,7)>=day.slice(0,7))})); };
+  const history = () => db.prepare('SELECT payload FROM history ORDER BY day DESC LIMIT 30').all().map(r => {const {positions,rates,ledgerCursor,credits,debits,...summary}=JSON.parse(r.payload);return summary;}).reverse();
+  const snapshot = (s, day=nowDate(s.preferences.timeZone)) => { const m = calculate(s); db.prepare('INSERT INTO history(day,payload) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day, JSON.stringify({...financialSnapshot(s,m,day),ledgerCursor:ledgerCursor(),credits:getKV('income_credits',[]).filter(c=>c.period>=day.slice(0,7)||c.postedAt?.slice(0,7)>=day.slice(0,7)),debits:getKV('expense_debits',[]).filter(d=>d.period>=day.slice(0,7)||d.postedAt?.slice(0,7)>=day.slice(0,7))})); };
   const persistState=(next,current,label)=>{
-    const auxiliary={cursor:ledgerCursor(),credits:getKV('income_credits',[])};
+    const auxiliary={cursor:ledgerCursor(),credits:getKV('income_credits',[]),debits:getKV('expense_debits',[])};
     db.prepare('INSERT INTO audit(created_at,label,state) VALUES(?,?,?)').run(new Date().toISOString(),label,JSON.stringify({...current,_restore:auxiliary}));
     setKV('state',next);
     db.prepare('DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 100)').run();
@@ -122,11 +123,13 @@ export function openStore(directory) {
         }
         setKV('ledger_generation',ledgerGeneration()+1);
         setKV('income_credits',restore.auxiliary?.credits??getKV('income_credits',[]).filter(c=>c.postedAt<restore.at));
+        setKV('expense_debits',restore.auxiliary?.debits??getKV('expense_debits',[]).filter(d=>d.postedAt<restore.at));
       }
       if(reset){
         setKV('ledger_generation',ledgerGeneration()+1);
         db.prepare("UPDATE ledger_entries SET payload=json_set(payload,'$.status','cancelled','$.message','财务档案已清空，旧待入账记录已取消') WHERE json_extract(payload,'$.status')='pending'").run();
         setKV('income_credits',[]);
+        setKV('expense_debits',[]);
       }
       snapshot(state());
       db.exec('COMMIT');
@@ -151,6 +154,24 @@ export function openStore(directory) {
     }catch(error){db.exec('ROLLBACK');throw error;}
   };
   const incomeStatus=(now=new Date())=>{const credits=getKV('income_credits',[]);return {...incomePlan(state({raw:true}),credits,now),credits:credits.slice(-12).reverse()};};
+  const applyExpenses=(now=new Date())=>{
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      const current=state({raw:true}),debits=getKV('expense_debits',[]),plan=expensePlan(current,debits,now);
+      if(!plan.due.length){db.exec('COMMIT');return {posted:0,...plan};}
+      const next=structuredClone(current),cash=next.assets.find(a=>a.id===current.profile.autoExpenses.cashAssetId);
+      const amount=Math.round(plan.due.reduce((sum,item)=>sum+item.amount,0)*100)/100,day=nowDate(current.preferences.timeZone,now);
+      cash.value=Math.round((cash.value-amount)*100)/100;cash.asOf=day;
+      next.profile.autoExpenses.lastPeriod=plan.due.at(-1).period;next.revision=current.revision+1;
+      const validated=validateState(next);
+      const receipts=plan.due.map(item=>({period:item.period,dueDate:item.date,amount:item.amount,assetId:item.assetId,postedAt:now.toISOString(),revision:next.revision}));
+      persistState(validated,current,`必要生活支出自动扣减 · ${receipts.map(r=>r.period).join('、')} · ${amount.toLocaleString('zh-CN')} 元`.slice(0,100));
+      setKV('expense_debits',[...debits,...receipts]);
+      snapshot(project(validated),day);
+      db.exec('COMMIT');return {...expensePlan(validated,[...debits,...receipts],now),posted:receipts.length,totalAmount:amount};
+    }catch(error){db.exec('ROLLBACK');throw error;}
+  };
+  const expenseStatus=(now=new Date())=>{const debits=getKV('expense_debits',[]);return {...expensePlan(state({raw:true}),debits,now),debits:debits.slice(-12).reverse()};};
   const ledgerEntry=id=>{const row=db.prepare('SELECT payload FROM ledger_entries WHERE id=?').get(id);return row?JSON.parse(row.payload):null;};
   const ledgerEntries=({pending=false,limit=50}={})=>db.prepare("SELECT payload FROM ledger_entries"+(pending?" WHERE json_extract(payload,'$.status')='pending'":'')+" ORDER BY json_extract(payload,'$.createdAt') DESC,rowid DESC LIMIT ?").all(limit).map(row=>JSON.parse(row.payload));
   const ledgerPage=({id,status,assetId,date,from,to,offset=0,limit=25}={},cursor=null)=>{
@@ -181,7 +202,7 @@ export function openStore(directory) {
       const args=last.ledgerCursor==null?[]:[last.ledgerCursor];
       entries=db.prepare("SELECT payload FROM "+table+" WHERE json_extract(payload,'$.revision') BETWEEN ? AND ?").all(...args,base.revision+1,last.revision).map(r=>JSON.parse(r.payload));
     }
-    return monthlyBridge(month,base,rows,entries,last?.credits||getKV('income_credits',[]));
+    return monthlyBridge(month,base,rows,entries,last?.credits||getKV('income_credits',[]),last?.debits||getKV('expense_debits',[]));
   };
   const postLedgerEntry=(entry,transition,check)=>{
     db.exec('BEGIN IMMEDIATE');
@@ -225,7 +246,7 @@ export function openStore(directory) {
   };
   const messages = id => db.prepare('SELECT * FROM messages'+(id?' WHERE conversation_id=?':'')+' ORDER BY created_at,rowid').all(...(id?[id]:[])).map(m=>({...m,metadata:JSON.parse(m.metadata)}));
   return {
-    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,ledgerEntry,ledgerEntries,ledgerPage,ledgerCursor,snapshotOn,monthSummary,postLedgerEntry,ledgerGeneration,
+    db, state, getKV, setKV, save, history, snapshot, recordPrice, priceHistory, applyIncome, incomeStatus,applyExpenses,expenseStatus,ledgerEntry,ledgerEntries,ledgerPage,ledgerCursor,snapshotOn,monthSummary,postLedgerEntry,ledgerGeneration,
     reset(expectedRevision){return save(initialState(),expectedRevision,'清空财务档案（可从历史恢复）',{reset:true});},
     cancelLedgerEntry(id){const entry=ledgerEntry(id);if(!entry||entry.status!=='pending')throw new Error('只能取消尚未入账的记录');return postLedgerEntry(entry,()=>({receipt:{status:'cancelled'}}));},
     audit: () => db.prepare('SELECT id,created_at,label FROM audit ORDER BY id DESC LIMIT 20').all(),

@@ -706,6 +706,64 @@ test('沪深市场包含ETF子页并保留其他市场导航，更新操作使�
   assert.equal(refreshes,1);assert.equal(h.run('cnMarketBusy'),false);
 });
 
+test('沪深页可登记持仓并把同一只股票加入或移出自选',async()=>{
+  const stock={name:'沪市示例',market:'SH',symbol:'601318',key:'SH.601318',currency:'CNY'};
+  const quote={price:11,previous:{price:10},time:'2026-11-09 15:00:00'};
+  let writes=0,quotes=0;
+  const h=componentHarness(async(url,options)=>{
+    if(url.startsWith('/api/market/search?')){
+      assert.equal(new URL(url,'http://localhost').searchParams.get('market'),'CN');
+      return Response.json({items:[stock]});
+    }
+    if(url==='/api/market/quote'){quotes++;return Response.json({quote});}
+    assert.equal(url,'/api/state');writes++;
+    const payload=JSON.parse(options.body),state=validateState(payload.state);
+    state.revision=payload.revision+1;
+    return Response.json({...h.context.fixture,state,metrics:calculate(state)});
+  });
+  const click=dataset=>h.listeners.click({target:{closest:()=>({dataset})}});
+  const submit=form=>h.listeners.submit({target:form,preventDefault(){}});
+  h.run("location.hash='#cn-market';cnMarketAttempted=true;render();");
+  assert.match(h.nodes.get('#app').innerHTML,/添加沪深股票/);
+  await click({action:'add-cn-stock'});
+  let dialog=h.nodes.get('#dialog').innerHTML;
+  assert.match(dialog,/name="type" value="stock"/);
+  assert.match(dialog,/value="CN" selected/);
+  assert.doesNotMatch(dialog,/value="HK"|value="US"/);
+  const draft={cnStock:'1',type:'stock',stockMarket:'CN',name:stock.name,currency:'CNY',unit:'股',autoPrice:'on',quantity:'100'};
+  h.nodes.set('#asset-form',new h.Form('asset-form',Object.entries(draft)));
+  await click({action:'search-security'});
+  await click({action:'select-security',index:'0'});
+  dialog=h.nodes.get('#dialog').innerHTML;
+  assert.match(dialog,/value="SH" selected/);assert.match(dialog,/name="stockSymbol" value="601318"/);
+  await submit(new h.Form('asset-form',Object.entries({...draft,stockMarket:'SH',stockSymbol:stock.symbol})));
+  assert.equal(h.run('data.state.assets[0].quantity'),100);
+  const holdings=h.run('JSON.stringify(data.state.assets)');
+  await click({action:'cn-stock-view',view:'watchlist'});
+  assert.match(h.nodes.get('#app').innerHTML,/还没有沪深自选/);
+  await click({action:'add-cn-watch'});
+  const watchForm=new h.Form('cn-watch-form',[['name',stock.symbol]]);
+  h.nodes.set('#cn-watch-form',watchForm);
+  await submit(watchForm);
+  assert.match(h.nodes.get('[data-stock-results]').innerHTML,/加入自选/);
+  await click({action:'select-cn-watch',index:'0'});
+  await new Promise(resolve=>setImmediate(resolve));
+  await click({action:'refresh-cn-watch',key:stock.key});
+  assert.equal(quotes,3);
+  const html=h.nodes.get('#app').innerHTML;
+  assert.match(html,/我的沪深自选/);assert.match(html,/\+10\.00%/);
+  assert.doesNotMatch(html,/浮动盈亏/);
+  await click({action:'add-cn-watch'});
+  await submit(watchForm);
+  assert.match(h.nodes.get('[data-stock-results]').innerHTML,/disabled[^>]*>.*已自选/);
+  await click({action:'select-cn-watch',index:'0'});
+  assert.equal(writes,2);
+  await click({action:'close-dialog'});
+  await click({action:'remove-cn-watch',key:stock.key});
+  assert.equal(writes,3);assert.equal(h.run('data.state.cnStockWatchlist.length'),0);
+  assert.equal(h.run('JSON.stringify(data.state.assets)'),holdings);
+});
+
 test('季度持仓复盘到期才显示，完成后隐藏，下一季度再次提醒',async()=>{
   const h=componentHarness();
   h.run(`Date.now=()=>firstReview-1;
@@ -728,4 +786,18 @@ test('季度持仓复盘到期才显示，完成后隐藏，下一季度再次�
   assert.equal(slot.innerHTML,'');
   h.run('Date.now=()=>Date.UTC(2027,3,5,12);refreshQuarterlyReview()');
   assert.match(slot.innerHTML,/本季待复盘/);
+});
+
+test('现金流表单保存月末扣减账户和起始日期，保留已记账月份并显示扣减状态',async()=>{
+  let saved;
+  const h=componentHarness(async(_url,options)=>{saved=validateState(JSON.parse(options.body).state);return Response.json({...h.context.fixture,state:saved});});
+  h.run("data.state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:30000}];data.state.profile.autoExpenses={enabled:true,cashAssetId:'cash',startsOn:'2026-11-11',lastPeriod:'2026-11'};");
+  assert.match(h.run('cashflowPage()'),/name="expensesAutoDebit" checked/);
+  await h.listeners.submit({target:new h.Form('profile-form',Object.entries({income:'0',expenses:'5500',payday:'25',emergencyMonths:'6',incomeStability:'stable',expensesAutoDebit:'on',expensesCashAssetId:'cash',expensesStartsOn:'2026-11-11'})),preventDefault(){}});
+  assert.equal(saved.profile.expenses,5500);
+  assert.deepEqual(saved.profile.autoExpenses,{enabled:true,cashAssetId:'cash',startsOn:'2026-11-11',lastPeriod:'2026-11'});
+  h.run("data.expenseSchedule={enabled:true,status:'ready',accountName:'现金',amount:5500,nextDate:'2026-12-31',debits:[{period:'2026-11',dueDate:'2026-11-30',amount:5500,postedAt:'2026-11-30T00:00:00Z'}]};");
+  assert.match(h.run('expenseScheduleHTML()'),/每月月末扣减/);assert.match(h.run('expenseScheduleHTML()'),/5,500/);assert.match(h.run('expenseScheduleHTML()'),/2026-12-31/);
+  h.run("data.expenseSchedule.status='blocked';data.expenseSchedule.message='现金账户余额不足';");
+  assert.match(h.run('expenseScheduleHTML()'),/现金账户余额不足/);assert.match(h.run('expenseScheduleHTML()'),/最近必要支出扣减记录/);
 });

@@ -24,6 +24,26 @@ test('Chinese names and stock codes resolve exact A/H identities from search, an
  assert.equal(query,'中国平安');assert.deepEqual(r.items.map(x=>x.key),['SH.601318','HK.02318']);
  const offline=await searchSecurities(s,'中国平安','SH',{searchProvider:async()=>{throw new Error();},provider:async()=>{throw new Error();},now});
  assert.equal(offline.items.length,1);assert.equal(offline.items[0].key,'SH.601318');assert.equal((await searchSecurities(s,'601318','ALL',{provider:async()=>({catalog:[]}),now})).items[0].key,'SH.601318');
+ const cn=await searchSecurities(s,'中国平安','CN',{provider:async()=>{throw new Error();},now});
+ assert.deepEqual(cn.items.map(x=>x.key),['SH.601318']);
+});
+
+test('沪深自选兼容旧档案，行情单独投影，且不改变持仓或资产合计',async t=>{
+ const s=setup(t);holding(s);
+ const state=s.state({raw:true}),before=calculate(s.state());
+ delete state.cnStockWatchlist;
+ assert.deepEqual(validateState(state).cnStockWatchlist,[]);
+ const item={name:'关注的深市股票',security:{market:'SZ',symbol:'000001'}};
+ state.cnStockWatchlist=[item,item];
+ assert.throws(()=>validateState(state),/自选股票代码重复/);
+ state.cnStockWatchlist=[{...item,security:{market:'HK',symbol:'02318'}}];
+ assert.throws(()=>validateState(state),/仅支持沪市和深市/);
+ state.cnStockWatchlist=[item];s.save(state,state.revision);
+ await refreshStocks(s,{now,keys:['SZ.000001'],provider:async()=>({quotes:[raw('SZ.000001')]})});
+ assert.equal(s.state().cnStockWatchlist[0].quote.price,11);
+ assert.deepEqual(s.state({raw:true}).cnStockWatchlist,[{name:item.name,security:security(item.security)}]);
+ assert.deepEqual(s.state({raw:true}).assets,state.assets);
+ assert.deepEqual(calculate(s.state()),before);
 });
 
 test('Tencent search parses escaped Unicode as data and canonicalizes US listing suffixes',async()=>{

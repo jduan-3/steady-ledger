@@ -32,6 +32,61 @@ test('真实买入附带更新持仓请求时仍走买入，不能错误转成�
   const {holding}=setup(t);
   assert.equal((await holding('今天用现有现金买入1000元科创，请更新持仓')).status,'applied');
 });
+test('云铝买入原话及旧版重复股数追问均能入账，使用用户成本而非行情且不重复扣现金',async t=>{
+  for(const recover of [false,true])await t.test(recover?'补答200股':'完整原话',async t=>{
+    const {store,bind}=setup(t),state=store.state();
+    state.assets[1]={id:'yunlv',name:'云铝股份',type:'stock',currency:'CNY',quantity:100,unit:'股',value:2000,security:{market:'SZ',symbol:'000807'},costBasis:{amount:2000,quantity:100,currency:'CNY'}};
+    store.save(state,state.revision);
+    const original='我买了200 股云铝股份 帮我记录一下， 用的现金， 成本是 23.53';
+    const history=recover?[
+      {role:'user',content:original,created_at:now.toISOString()},
+      {role:'assistant',content:'这笔的金额或股数／份额是多少？请核对数字的用途和单位。'},
+      {role:'user',content:'200 股',created_at:now.toISOString()},
+      {role:'assistant',content:'这笔的金额或股数／份额是多少？请核对数字的用途和单位。'}
+    ]:[];
+    const call=()=>bind(recover?'200 股':original,'yunlv-buy',{history}).recordHoldingChange({query:'云铝股份',evidence:recover?original+'；200 股':original,side:'buy',quantity:200,price:23.53,cashSource:'registered',currency:'CNY'});
+    const result=await call();
+    assert.equal(result.status,'applied');assert.equal(result.quantity,200);assert.equal(result.amount,4706);assert.equal(result.price.price,23.53);assert.equal(result.estimated,false);
+    assert.equal(result.after.quantity,300);assert.equal(result.after.cash,5294);assert.equal(result.after.cost,6706);
+    const revision=store.state().revision;
+    assert.equal((await call()).replayed,true);assert.equal(store.state().revision,revision);assert.equal(store.ledgerEntries().length,1);
+  });
+});
+test('买入成本价支持明确单位成本，不把总成本或原持仓成本当成交单价',async t=>{
+  for(const cost of ['成本是2','成本价2元','单位成本2元','每份成本是2元']){
+    const {holding}=setup(t);
+    const result=await holding('用的 是现金买入100份科创，'+cost,{amount:undefined,quantity:100,price:2});
+    assert.equal(result.status,'applied',cost);assert.equal(result.after.cash,9800);
+  }
+  const {store,holding}=setup(t),before=store.state({raw:true});
+  for(const cost of ['总成本是2元','持仓成本是2元','原成本是2元']){
+    await assert.rejects(holding('用现有现金买入100份科创，'+cost,{amount:undefined,quantity:100,price:2}),error=>{
+      assert.match(error.ledgerClarification.question,/每股.*每份成交价/);assert.doesNotMatch(error.ledgerClarification.question,/股数/);return true;
+    });
+  }
+  assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
+});
+test('价格与手续费追问可承接简短补答，保留原数量和资金来源',async t=>{
+  for(const [field,reply,value] of [['price','每份成本2元',2],['fee','手续费5元',5]]){
+    const {bind}=setup(t),original='用的现金买入100份科创';
+    let question;
+    await assert.rejects(bind(original).recordHoldingChange({query:'科创',side:'buy',quantity:100,[field]:value,evidence:original}),error=>{
+      question=error.ledgerClarification.question;assert.match(question,field==='price'?/成交价/:/手续费/);return true;
+    });
+    const result=await bind(reply,'cost-follow-up',{history:[{role:'user',content:original},{role:'assistant',content:question}]}).recordHoldingChange({query:'科创',side:'buy',quantity:100,[field]:value,evidence:reply});
+    assert.equal(result.status,'applied');assert.equal(result.after.quantity,200);assert.equal(result.after.cash,field==='price'?9800:9795);
+  }
+});
+test('用的现金补答可承接资金来源追问，否定现金来源不会扣款',async t=>{
+  const {store,bind,holding}=setup(t),original='买入100份科创，成交价2元';
+  const first=await holding(original,{amount:undefined,quantity:100,price:2});
+  assert.equal(first.status,'needs_information');
+  const result=await bind('用的现金','cash-follow-up',{history:[{role:'user',content:original},{role:'assistant',content:first.question}]}).recordHoldingChange({query:'科创',side:'buy',quantity:100,price:2,evidence:original});
+  assert.equal(result.status,'applied');assert.equal(result.after.cash,9800);
+  const before=store.state({raw:true});
+  const denied=await holding('买入100份科创，不是用的现金，成交价2元',{amount:undefined,quantity:100,price:2},'cash-denied');
+  assert.equal(denied.status,'needs_information');assert.deepEqual(store.state({raw:true}),before);
+});
 test('现有现金买入同时更新持仓与现金、保留成本，重放只入账一次且记录可恢复',async t=>{
   const {store,holding}=setup(t),before=store.state({raw:true});
   const result=await holding('我今天用现有现金加仓1000元科创');assert.equal(result.status,'applied');assert.equal(result.after.quantity,600);assert.equal(result.after.cash,9000);assert.equal(result.after.cost,1100);assert.equal(result.estimated,true);

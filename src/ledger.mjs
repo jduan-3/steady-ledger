@@ -42,6 +42,7 @@ function numberFacts(text,kind) {
   // Removing whitespace must not join numbers from separate replies, e.g.
   // “亏损4283.93\n24775.11份” must retain the full 24775.11 share quantity.
   const input=String(text).normalize('NFKC').toLowerCase().replace(/\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?/g,s=>s.replace(/[,，]/g,'')).replace(/([\d零〇一二两三四五六七八九十百千万亿])\s+(?=[\d零〇一二两三四五六七八九十百千万亿])/g,'$1，').replace(/\s+/g,'');
+  const purchaseByQuantity=kind==='holding'&&/买了|买入|加了|加仓|申购/.test(input)&&/[\d零〇一二两三四五六七八九十百千万亿](?:股(?!数|票)|份(?!额))/.test(input);
   const facts=[];
   for(const match of input.matchAll(/\d+(?:\.\d+)?(?:万|千|百|亿|k)?|[零〇一二两三四五六七八九十百千万亿]+(?:点[零〇一二两三四五六七八九]+)?/g)){
     const [raw]=match,before=input.slice(0,match.index),after=input.slice(match.index+raw.length);
@@ -49,7 +50,11 @@ function numberFacts(text,kind) {
     const prefix=before.match(/(美元|美金|港币|港元|港幣|人民币|人民幣|usd|hkd|cny|rmb|us\$|hk\$|[¥￥$])$/)?.[0];
     const context=prefix?before.slice(0,-prefix.length):before;
     const fee=/(?:手续费|费用|佣金|申购费|赎回费)(?:为|是|共|合计|约|[:：])*$/.test(context)||/^(?:元|块钱|块|美元|美金|港币|港元|usd|hkd|cny)?(?:的)?(?:手续费|费用|佣金)/.test(after);
-    const price=/(?:成交价|单价|价格|均价|每股|每份|按)(?:为|是|共|约|[:：])*$/.test(context)||/^(?:元|块|美元|港元|usd|hkd)(?:\/(?:股|份)|的?(?:成交价|单价|均价|价格))/.test(after);
+    const unitCost=kind==='holding'&&/(?:成本价|单位成本|每股成本|每份成本)(?:为|是|约|[:：])*$/.test(context);
+    // In a quantity-based purchase, a separate “成本是…” clause is the
+    // purchase unit cost. Total or existing-position costs are not prices.
+    const purchaseCost=purchaseByQuantity&&/(?:^|[，,。；;！？!?]|本次|这笔)成本(?:为|是|约|[:：])*$/.test(context);
+    const price=unitCost||purchaseCost||/(?:成交价|单价|价格|均价|每股|每份|按)(?:为|是|共|约|[:：])*$/.test(context)||/^(?:元|块|美元|港元|usd|hkd)(?:\/(?:股|份)|的?(?:成交价|单价|均价|价格))/.test(after);
     const quantityUnit=/^(份|股|手)$/.test(unit||'');
     let role=quantityUnit?(fee||price?null:'quantity'):fee?'fee':price?'price':unit||prefix?'amount':null;
     if(kind==='balance'&&/(?:单位成本|平均成本|持仓均价)(?:为|是|约|[:：])*$/.test(context))role='averageCost';
@@ -92,14 +97,14 @@ function evidenceFor(meta,evidence,kind,assets=[]) {
   if(kind==='holding'&&/买了|买入|加了|加仓|申购|卖了|卖出|卖掉|卖光|卖完|减了|减仓|赎回|清仓/.test(meta.question)&&assets.some(a=>['stock','fund'].includes(a.type)&&mentionsHolding(a,meta.question)))return {text:meta.question,dateText:meta.question,at:meta.startedAt||Date.now()};
   const previous=meta.history?.at(-2),answer=meta.history?.at(-1);
   const dateAnswer=/^(?:是|就|我是)?(?:今天|昨天|昨日|前天|\d{4}-\d{2}-\d{2})(?:买的|买入的|卖的|卖出的|下单的|成交的|申购的|赎回的|的)?[。！!]?$/u.test(normalize(meta.question));
-  const cashAnswer=/现有现金|额外投入|账外|外部资金|用现金|余额|^现金[。！!]?$/u.test(meta.question)&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回/.test(meta.question);
-  const valueAnswer=meta.question.length<=100&&numberFacts(meta.question,'holding').some(f=>['amount','quantity'].includes(f.role))&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回|如果|假设|比如|计划/.test(meta.question);
+  const cashAnswer=/现有现金|额外投入|账外|外部资金|用(?:的|的是)?现金|余额|^现金[。！!]?$/u.test(normalize(meta.question))&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回/.test(meta.question);
+  const valueAnswer=meta.question.length<=100&&numberFacts(meta.question,'holding').some(f=>['amount','quantity','price','fee'].includes(f.role))&&!/买了|卖了|买入|卖出|加仓|减仓|申购|赎回|如果|假设|比如|计划/.test(meta.question);
   const subjectAnswer=meta.question.length<=80&&assets.some(a=>['stock','fund','cash'].includes(a.type)&&mentionsHolding(a,meta.question))&&!/买了|买入|加仓|申购|卖了|卖出|卖掉|减仓|赎回|清仓|收到|支付|如果|假设|比如|计划/.test(meta.question);
   const tradeAnswer=/^(?:已经|已)(?:发生|成交)(?:了)?(?:[，,。！!]|按照|按|以|$)/.test(normalize(meta.question))&&/已经发生|发生的买卖|实际成交/.test(answer?.content||'');
   const saved=savedLedgerAnswer(answer);
   if(kind==='holding'&&previous?.role==='user'&&answer?.role==='assistant'&&!saved&&/[?？]|请.{0,20}(?:确认|提供|补充)|告诉我|还是/.test(answer.content)){
     const dateQuestion=dateAnswer&&/哪天|哪一天|日期|几号|何时|什么时候|成交日|交易日/.test(answer.content);
-    if(dateQuestion||tradeAnswer||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位/.test(answer.content)||allAnswer(meta.question)&&/金额|数量|份额|股数|单位|全部|清仓|哪项记录/.test(answer.content)||subjectAnswer&&/哪项|哪一|名称|代码|标的|记录|账户/.test(answer.content)){
+    if(dateQuestion||tradeAnswer||cashAnswer&&/现有现金|额外投入/.test(answer.content)||valueAnswer&&/金额|数量|份额|股数|单位|价格|成交价|成本|费用|手续费/.test(answer.content)||allAnswer(meta.question)&&/金额|数量|份额|股数|单位|全部|清仓|哪项记录/.test(answer.content)||subjectAnswer&&/哪项|哪一|名称|代码|标的|记录|账户/.test(answer.content)){
       // Only adjacent answers to a clarification can extend an instruction.
       // Rebuild evidence from complete user turns, never the model's paraphrase.
       const original=evidenceFor({...meta,question:previous.content,startedAt:Date.parse(previous.created_at)||meta.startedAt,history:meta.history.slice(0,-2)},undefined,kind,assets);
@@ -169,8 +174,8 @@ function authorize(meta,args,kind,evidence=evidenceFor(meta,args.evidence,kind))
   const denied=new RegExp('(?:没有|并未|未曾|尚未|从未|没|未|并非|不是|不曾|不再|不(?!仅|但|光)|别|不要|无需|取消)[^，,。；;！？!?\\n]*?(?:'+actions.source+'|记账|记录|登记|入账)');
   if([text,meta.question].some(s=>denied.test(s)))throw new Error('买卖、收支或记账指令被否定，未修改账本；请明确实际发生的事项');
   const facts=numberFacts(text,kind);
-  for(const key of ['amount','quantity','price','fee'])if(args[key]!=null&&(!Number.isFinite(args[key])||args[key]<(key==='fee'?0:1e-8)||args[key]>1e14||!facts.some(f=>f.role===key&&Math.abs(f.value-args[key])<1e-8&&!(key==='quantity'&&f.unit==='手'))))throw ask('金额、数量、价格与费用必须来自用户原话，并匹配对应单位和用途，不能猜测','这笔的金额或股数／份额是多少？请核对数字的用途和单位。');
-  if(args.price!=null&&!/成交价|单价|价格|每股|每份|均价|按.{0,12}(元|块|美元|港元)/.test(text))throw new Error('用户尚未提供明确成交价格，不能把模型猜测的价格作为成交价');
+  const valueQuestions={amount:'这笔的成交金额是多少？请注明金额和币种。',quantity:'这笔的股数／份额是多少？请注明数量单位。',price:'这笔的每股／每份成交价是多少？请确认是单位成本还是总成本。',fee:'这笔的手续费金额是多少？请注明金额和币种。'};
+  for(const key of ['amount','quantity','price','fee'])if(args[key]!=null&&(!Number.isFinite(args[key])||args[key]<(key==='fee'?0:1e-8)||args[key]>1e14||!facts.some(f=>f.role===key&&Math.abs(f.value-args[key])<1e-8&&!(key==='quantity'&&f.unit==='手'))))throw ask('金额、数量、价格与费用必须来自用户原话，并匹配对应单位和用途，不能猜测（'+key+'）',valueQuestions[key]);
   return evidence;
 }
 function cashAccount(state,currency,id) {
@@ -380,9 +385,9 @@ export function createLedgerService(store,{clock=()=>new Date(),stockProvider=ru
         if(fullSale)args={...args,quantity:prior?.quantity??asset.quantity};
         if((args.amount==null)===(args.quantity==null))return need('请明确本次买卖金额或股数／份额，二者选一');
         const sourceText=evidence.text+'\n'+meta.question;
-        const sourceAnswer=evidence.text;
-        const affirmative=sourceAnswer.replace(/(?:不是|不用|并非|不使用)(?:用)?(?:额外(?:投入|的)?|账外资金|外部资金|新增资金|现有现金|已有现金|现金)/g,'');
-        const external=/额外投入|账外|外部资金|新增资金/.test(affirmative),registered=/现有现金|已有现金|用现金|用(?:现有)?余额|(?:^|\n)现金[。！!]?$|从.{0,30}(账户|余额|现金)/.test(affirmative);
+        const sourceAnswer=evidence.text.normalize('NFKC').replace(/[^\S\n]+/g,'');
+        const affirmative=sourceAnswer.replace(/(?:不是|不用|并非|不使用)(?:用)?(?:的|的是)?(?:额外(?:投入|的)?|账外资金|外部资金|新增资金|现有现金|已有现金|现金)/g,'');
+        const external=/额外投入|账外|外部资金|新增资金/.test(affirmative),registered=/现有现金|已有现金|用(?:的|的是)?现金|用(?:现有)?余额|(?:^|\n)现金[。！!]?$|从.{0,30}(账户|余额|现金)/.test(affirmative);
         if(args.side==='buy'&&external&&registered)return need('这笔包含两种资金来源，请分别说明金额或分两条记录');
         if(args.side==='buy'&&!external&&!registered)return need('这笔买入使用现有现金，还是额外投入？',{question:'这笔买入是用现有现金，还是额外投入？'});
         const cashSource=args.side==='buy'?(external?'outside':'registered'):(/转出账外|取出账外|不入现金/.test(sourceText)?'outside':'registered');

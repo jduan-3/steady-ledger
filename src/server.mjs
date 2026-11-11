@@ -45,7 +45,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
     if(id&&!thread)throw Object.assign(new Error('对话不存在或已删除'),{status:404});
     return {conversation:thread,conversations:store.conversations(),messages:thread?store.messages(thread.id):[]};
   };
-  const view = () => { const state = store.state(), metrics = calculate(state), history = store.history(); return { state, metrics, rules: evaluate(state, metrics), history, valuation: dailyValuation(state, metrics, history), incomeSchedule:store.incomeStatus(),ledgerEntries:store.ledgerEntries(),pendingEntries:store.ledgerEntries({pending:true,limit:-1}), config: store.config(), reports: store.reports(), marketBriefs:readMarketBriefs(store), ...chatView(), chatRun:assistantRuns.view(), audit: store.audit(), avatarUrl:avatarUrl() }; };
+  const view = () => { const state = store.state(), metrics = calculate(state), history = store.history(); return { state, metrics, rules: evaluate(state, metrics), history, valuation: dailyValuation(state, metrics, history), incomeSchedule:store.incomeStatus(),expenseSchedule:store.expenseStatus(),ledgerEntries:store.ledgerEntries(),pendingEntries:store.ledgerEntries({pending:true,limit:-1}), config: store.config(), reports: store.reports(), marketBriefs:readMarketBriefs(store), ...chatView(), chatRun:assistantRuns.view(), audit: store.audit(), avatarUrl:avatarUrl() }; };
   const authenticated = req => {
     if (disableAuth) return true;
     const token = req.headers.cookie?.split(';').map(s => s.trim()).find(x => x.startsWith('balance_session='))?.slice('balance_session='.length);
@@ -87,7 +87,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
     return reportTask;
   }
   async function tick() {
-    store.applyIncome();
+    store.applyIncome();store.applyExpenses();
     if (pendingReport) return;
     await Promise.all([updateNAV(),updateMarkets()]);
     await (pendingLedger||(pendingLedger=ledger.processPending().finally(()=>{pendingLedger=null;})));
@@ -180,7 +180,7 @@ export function createApplication({ dataDir = process.env.DATA_DIR || join(root,
           return json(res,await stockDetails(store,a.security.key));
         }
         if (path === '/api/auth/logout' && req.method === 'POST') { const token = req.headers.cookie?.match(/balance_session=([a-f0-9]{64})/)?.[1]; if (token) store.db.prepare('DELETE FROM sessions WHERE token=?').run(hash(token)); res.setHeader('Set-Cookie', 'balance_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res, { ok: true }); }
-        if (path === '/api/state' && req.method === 'PUT') { const input = await body(req); store.save(input.state, input.revision, String(input.label || '更新财务档案').slice(0,100)); store.applyIncome(); return json(res, view()); }
+        if (path === '/api/state' && req.method === 'PUT') { const input = await body(req); store.save(input.state, input.revision, String(input.label || '更新财务档案').slice(0,100)); store.applyIncome();store.applyExpenses(); return json(res, view()); }
         if (path === '/api/demo' && req.method === 'POST') { const { revision } = await body(req), s = store.state(); if (s.assets.length || s.debts.length) throw new Error('请先导出并清空现有档案，再载入演示'); store.save(demoState(), revision, '载入虚构演示数据'); return json(res, view()); }
         if (path === '/api/reset' && req.method === 'POST') { const { revision, confirmation } = await body(req); if (confirmation !== '清空财务档案') throw new Error('请输入完整确认文字'); store.reset(revision); await assistantRuns.invalidate(); store.clearMessages(); store.clearReports(); return json(res, view()); }
         if (path === '/api/undo' && req.method === 'POST') { const { id, revision } = await body(req); store.undo(Number(id), revision); return json(res, view()); }

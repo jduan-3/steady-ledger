@@ -31,13 +31,14 @@ const normalize = value => String(value ?? '').normalize('NFKC').replace(/\s+/g,
 export async function searchSecurities(store, query, market = 'ALL', { provider = runOpenD, searchProvider = provider===runOpenD?searchTencent:null, now = new Date() } = {}) {
   query = normalize(query);
   if (!query || query.length > 80) throw new Error('请输入股票名称或代码');
-  if (!['ALL','SH','SZ','HK','US'].includes(market)) throw new Error('股票市场无效');
+  if (!['ALL','CN','SH','SZ','HK','US'].includes(market)) throw new Error('股票市场无效');
+  const matchesMarket=x=>market==='ALL'||x.market===market||(market==='CN'&&['SH','SZ'].includes(x.market));
   let catalog = store.getKV('stock_catalog', { items: [], fetchedAt: null }), message = '';
   if(searchProvider){
     try{
       const found=await searchProvider(query),byKey=new Map(catalog.items.map(x=>[x.key,x]));for(const item of found)byKey.set(item.key,item);
       store.setKV('stock_catalog',{...catalog,items:[...byKey.values()]});
-      return {items:found.filter(x=>market==='ALL'||x.market===market),message:''};
+      return {items:found.filter(matchesMarket),message:''};
     }catch{message='在线搜索暂不可用，尝试本机目录';}
   }
   if (!catalog.items.length || !Number.isFinite(Date.parse(catalog.fetchedAt)) || now - Date.parse(catalog.fetchedAt) > 86400000) {
@@ -58,7 +59,7 @@ export async function searchSecurities(store, query, market = 'ALL', { provider 
     try { catalog = await pendingCatalog.get(store); }
     catch (e) { if (!catalog.items.length) throw e; message = 'OpenD 暂不可用，使用已保存的股票目录'; }
   }
-  const items = catalog.items.filter(x => (market === 'ALL' || x.market === market) && ([x.name,...(x.aliases||[])].some(name=>normalize(name).includes(query)) || x.key.includes(query) || x.symbol.includes(query)));
+  const items = catalog.items.filter(x => matchesMarket(x) && ([x.name,...(x.aliases||[])].some(name=>normalize(name).includes(query)) || x.key.includes(query) || x.symbol.includes(query)));
   const rank = x => Number(x.key === query || x.symbol === query) * 4 + Number(normalize(x.name) === query) * 2;
   return { items: items.sort((a,b) => rank(b)-rank(a) || a.key.localeCompare(b.key)).slice(0,30), message };
 }
@@ -82,6 +83,9 @@ export function applyStockPrices(input, getKV) {
       a.movement = priceMovement(q,a.quantity);
     } else a.valuation = { status: 'pending', message: attempt?.error || '等待股票行情' };
   }
+  state.cnStockWatchlist=(state.cnStockWatchlist||[]).map(item=>({
+    ...item,quote:getKV('stock_quote:'+item.security.key),quoteError:getKV('stock_attempt:'+item.security.key)?.error||''
+  }));
   const fx = getKV('market_fx');
   if (state.preferences.autoFx !== false && fx) { state.preferences.rates = { ...state.preferences.rates, ...fx.rates, CNY: 1 }; state.preferences.fx = { date: fx.date, source: fx.source }; }
   return state;

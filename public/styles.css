@@ -592,6 +592,8 @@ dialog:has(#price-history-view) .dialog-header>.icon-btn{flex-shrink:0}
 .sector-map-legend small{margin-left:auto;font-size:11px}
 .market-assets{margin-top:24px;margin-bottom:24px}
 .market-assets>.card-header{margin-bottom:14px}
+.cn-stock-card>.filter-bar{padding:0 20px;margin-bottom:0}
+.cn-stock-card>.card-header{flex-wrap:wrap}
 @media(max-width:720px){.sector-mosaic,.sector-mosaic-eleven{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none;grid-auto-rows:130px;height:auto}.sector-mosaic .sector-tile{grid-column:auto!important;grid-row:auto!important;padding:14px}.sector-mosaic-eleven .sector-tile:last-child{grid-column:1/-1!important}.sector-tile b{font-size:24px}.sector-map-legend small{width:100%;margin-left:0}}
 .metrics-grid{gap:12px;margin-bottom:18px}
 .metric{padding:16px 18px;min-height:0}

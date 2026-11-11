@@ -36,7 +36,7 @@ export function buildAssistantData(store, state = store.state(), {indexedLedger=
   return structuredClone({capturedAt:new Date().toISOString(),revision:state.revision,isDemo:state.isDemo,...(indexedLedger?{ledgerCursor:store.ledgerCursor()}:{}),pages:{
     dashboard:{metrics,rules:evaluate(state,metrics),history,valuation:dailyValuation(state,metrics,history),buyPlans:state.buyPlans||[]},
     assets:{fundWatchlist:watched.map(f=>({...f,marketReference:fundReferenceSummary(references.find(r=>r.assetId===f.assetId))})),assets:state.assets,debts:state.debts,allocations,ledgerEntries:indexedLedger?[]:store.ledgerEntries({limit:-1})},
-    cashflow:{calendarSummary,scenarioSummary,calendar:calendarRows,calendarWithPlans:scenarioRows,profile:state.profile,upcoming:state.upcoming,incomeSchedule:store.incomeStatus()},
+    cashflow:{calendarSummary,scenarioSummary,calendar:calendarRows,calendarWithPlans:scenarioRows,profile:state.profile,upcoming:state.upcoming,incomeSchedule:store.incomeStatus(),expenseSchedule:store.expenseStatus()},
     'cn-market':{benchmarks:cn.benchmarks,summary:cn.summary,errors:cn.errors,notice:cn.notice,attemptedAt:cn.attemptedAt},
     'cn-etf':{items:cn.items,summary:cn.summary,errors:cn.errors,notice:cn.notice,attemptedAt:cn.attemptedAt,sharesAttemptedAt:cn.sharesAttemptedAt},
     'us-market':marketOverview(store,'US'), 'us-monthly':monthlyPerformance(store), 'us-quotes':watchboard(store), 'hk-market':marketOverview(store,'HK'),

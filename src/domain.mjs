@@ -8,10 +8,10 @@ export const nowDate = (timeZone = 'Asia/Shanghai', date = new Date()) => new In
 export function initialState() {
   return {
     version: 1, revision: 0, isDemo: false,
-    profile: { income: null, expenses: null, incomeStability: 'unknown', payday: 10, emergencyMonths: 6, note: '', autoIncome:{enabled:false,cashAssetId:'',startsOn:'',lastPeriod:''}, background: { displayName: DEFAULT_DISPLAY_NAME } },
+    profile: { income: null, expenses: null, incomeStability: 'unknown', payday: 10, emergencyMonths: 6, note: '', autoIncome:{enabled:false,cashAssetId:'',startsOn:'',lastPeriod:''}, autoExpenses:{enabled:false,cashAssetId:'',startsOn:'',lastPeriod:''}, background: { displayName: DEFAULT_DISPLAY_NAME } },
     policy: { stockCaution: 50, stockLimit: null, debtRatioLimit: null, issuerLimit: null, buyTranchePercent: null, staleDays: 7, grid: {...DEFAULT_GRID} },
     preferences: { timeZone: 'Asia/Shanghai', reportTime: '20:00', rates: { CNY: 1 }, autoFx: true },
-    assets: [], debts: [], upcoming: [], decisions: [], fundWatchlist: [], buyPlans: []
+    assets: [], debts: [], upcoming: [], decisions: [], fundWatchlist: [], cnStockWatchlist: [], buyPlans: []
   };
 }
 
@@ -44,6 +44,10 @@ export function validateState(input) {
   clean.profile.autoIncome={enabled:autoIncome.enabled===true,cashAssetId:text(autoIncome.cashAssetId??'','工资入账账户',100),startsOn:autoIncome.startsOn?dateField(autoIncome.startsOn,'自动入账起始日期'):'',lastPeriod:text(autoIncome.lastPeriod??'','最近工资入账月份',7)};
   if(clean.profile.autoIncome.lastPeriod&&!/^\d{4}-(0[1-9]|1[0-2])$/.test(clean.profile.autoIncome.lastPeriod))throw new Error('最近工资入账月份无效');
   if(clean.profile.autoIncome.enabled&&(!clean.profile.autoIncome.cashAssetId||!clean.profile.autoIncome.startsOn||!Number.isInteger(clean.profile.payday)))throw new Error('自动入账需要现金账户、起始日期与整数发薪日');
+  const autoExpenses=p.autoExpenses??{};
+  clean.profile.autoExpenses={enabled:autoExpenses.enabled===true,cashAssetId:text(autoExpenses.cashAssetId??'','必要支出扣减账户',100),startsOn:autoExpenses.startsOn?dateField(autoExpenses.startsOn,'自动扣减起始日期'):'',lastPeriod:text(autoExpenses.lastPeriod??'','最近必要支出扣减月份',7)};
+  if(clean.profile.autoExpenses.lastPeriod&&!/^\d{4}-(0[1-9]|1[0-2])$/.test(clean.profile.autoExpenses.lastPeriod))throw new Error('最近必要支出扣减月份无效');
+  if(clean.profile.autoExpenses.enabled&&(!clean.profile.autoExpenses.cashAssetId||!clean.profile.autoExpenses.startsOn))throw new Error('自动扣减需要现金账户与起始日期');
   const b = p.background ?? {};
   const choice = (value, allowed) => allowed.includes(value) ? value : '';
   clean.profile.background = {
@@ -85,6 +89,16 @@ export function validateState(input) {
     watchedCodes.add(f.code);
     const name=text(f.name??'基金 '+f.code,'自选基金名称');if(!name)throw new Error('自选基金名称不能为空');
     return {code:f.code,name};
+  });
+  const cnWatchlist=input.cnStockWatchlist??[],watchedStocks=new Set();
+  if(!Array.isArray(cnWatchlist)||cnWatchlist.length>5000)throw new Error('沪深自选格式错误或记录过多');
+  clean.cnStockWatchlist=cnWatchlist.map(item=>{
+    if(!['SH','SZ'].includes(item?.security?.market))throw new Error('沪深自选仅支持沪市和深市');
+    const s=security(item.security),name=text(item.name,'自选股票名称');
+    if(!name)throw new Error('自选股票名称不能为空');
+    if(watchedStocks.has(s.key))throw new Error('自选股票代码重复');
+    watchedStocks.add(s.key);
+    return {name,security:s};
   });
   for (const key of ['assets', 'debts', 'upcoming', 'decisions']) if (!Array.isArray(input[key]) || input[key].length > 5000) throw new Error(`${key}数据格式错误或记录过多`);
   const usedIds = new Set();
