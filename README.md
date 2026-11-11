@@ -7,7 +7,7 @@ The interface is Chinese-first and works on desktop and mobile. Each installatio
 ## Features
 
 - Track assets, debts, cost basis, portfolio allocation, and unrealized gains or losses.
-- Plan income, expenses, insurance premiums, and cash reserves, with optional monthly salary entries.
+- Plan income, expenses, insurance premiums, and cash reserves, with optional monthly salary entries and month-end living-expense deductions.
 - View fund NAVs and mainland Chinese, Hong Kong, and US stock quotes, intraday charts, daily history, and volume.
 - Track pending purchases with target amounts, dates and conditions, and keep completed or cancelled plans for review.
 - Search funds by name or code, keep a watchlist with published NAVs and reference charts, and add watched funds to purchase plans.
@@ -49,7 +49,9 @@ In **Settings → AI connection**, enter a Chat Completions-compatible base URL,
 
 Choose which financial data and conversation history the model may receive. Full-page access includes saved holdings, account names, notes, costs, and other business data; hiding amounts in the UI does not reduce that permission. API keys stay on the server, encrypted at rest.
 
-Local bookkeeping requires a separate opt-in and explicit instructions. The assistant can ask for missing details and continue from your reply. Fund transactions awaiting the requested day's published NAV remain pending until that value is available. These tools update the local ledger; they do not place brokerage orders.
+Local bookkeeping requires a separate opt-in and explicit instructions. The assistant can ask for missing details and continue from your reply. Fund transactions awaiting the requested day's published NAV remain pending until that value is available. These tools update the local ledger; they do not place brokerage orders. Each unfinished bookkeeping operation keeps a stable identity and its confirmed tool results across clarification replies and failed-answer retries. Committed entries remain recorded even when the model reply fails; retrying the unfinished operation reuses those receipts. Separate operations in one message keep separate completion states, and deleting the conversation deletes its operation drafts.
+
+An assistant run allows up to 12 tool-enabled model requests and 48 tool executions, then reserves one tool-free request to summarize the results and identify remaining gaps. These counters survive a restart. Streaming limits apply to individual SSE frames and accumulated model content, rather than the total protocol traffic of a long response; configured request and overall run deadlines still apply.
 
 With local bookkeeping enabled, the assistant can also delete a specified stock or fund holding record, or remove a fund from the watchlist. Holdings and watchlist entries are separate; unclear targets or scopes are clarified in chat. Deletion preserves cash and trade history, blocks holdings with pending entries, and can be restored from recent changes in Settings.
 
@@ -58,6 +60,8 @@ With local bookkeeping enabled, the assistant can also delete a specified stock 
 Stock quotes use Tencent public market data and optional local Futu OpenD access. Fund valuations use published unit NAVs from Eastmoney. Market dashboards also use Cboe daily VIX closes, Tencent Hang Seng volatility quotes, and public US macro sources. Data may be delayed; the app keeps source timestamps, retains cached values on failure, and leaves unavailable values empty.
 
 **买入待办** supports both manual status tracking and **登记成交**. Registering a confirmed purchase links the plan to a ledger entry and updates holdings and cash together. If the requested price is pending, the plan waits for settlement.
+
+**收入与计划 → 每月现金流** 可开启“每月月末自动从现金扣除必要生活支出”，选择人民币现金账户和起始日期。每个月末扣除已填写的整月金额（不按日折算），同月只记一次；应用关闭期间在下次启动补记，余额不足会保留待处理状态。统一按月记账的生活支出不要再逐笔重复登记。90 天预测也在月末扣除生活支出。
 
 **资产与负债 → 账户对账** compares a statement balance or quantity with the saved account snapshot. A cash adjustment requires a reason and explicit selection. **收入与计划 → 90 天现金流** projects daily balances with an optional purchase-plan scenario. **每日总结 → 月度变化拆解** uses a complete prior month-end snapshot and attributes verified movements, keeping unexplained amounts separate.
 
