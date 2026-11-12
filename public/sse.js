@@ -1,4 +1,5 @@
 // Shared UTF-8 SSE reader for provider responses and the browser chat.
+// Bound each pending frame, not cumulative traffic on a long-lived connection.
 export async function readEventStream(body, onEvent, { maxBytes = 2e6 } = {}) {
   if (!body) throw new Error('没有收到流式响应');
   const reader = body.getReader(), decoder = new TextDecoder();
@@ -20,14 +21,19 @@ export async function readEventStream(body, onEvent, { maxBytes = 2e6 } = {}) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) throw Object.assign(new Error('流式响应过大'), { code: 'SSE_SIZE' });
-      buffer += decoder.decode(value, { stream: true });
-      let end;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const value = buffer.slice(0, end).replace(/\r$/, '');
-        buffer = buffer.slice(end + 1);
-        if (line(value) === false) return;
+      let start = 0;
+      while (start < value.byteLength) {
+        const newline = value.indexOf(10, start);
+        const end = newline < 0 ? value.byteLength : newline + 1;
+        size += end - start;
+        if (size > maxBytes) throw Object.assign(new Error('单条流式消息过大'), { code: 'SSE_SIZE' });
+        buffer += decoder.decode(value.subarray(start, end), { stream: true });
+        start = end;
+        if (newline < 0) continue;
+        const completeLine = buffer.slice(0, -1).replace(/\r$/, '');
+        buffer = '';
+        if (completeLine === '') size = 0;
+        if (line(completeLine) === false) return;
       }
     }
     // An unterminated frame is incomplete, so it must not be dispatched.

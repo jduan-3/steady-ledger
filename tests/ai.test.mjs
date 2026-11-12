@@ -3,6 +3,71 @@ import assert from 'node:assert/strict';
 import { demoState, simulate } from '../src/domain.mjs';
 import { contextForAI, validateConfig } from '../src/ai.mjs';
 
+test('long provider streams survive SSE overhead and preserve reasoning through the tool round',async t=>{
+ const {runAssistant}=await import('../src/ai.mjs');let requests=0;const events=[];
+ const frame=delta=>'data: '+JSON.stringify({choices:[{delta}]})+'\n\n';
+ const reasoning='PRIVATE_REASONING';
+ const wire=frame({reasoning_content:reasoning}).repeat(20000)
+   +frame({tool_calls:[{index:0,id:'long-stream',function:{name:'get_stock_budget',arguments:'{}'}}]})
+   +'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n';
+ assert.ok(Buffer.byteLength(wire)>1e6);
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+   if(++requests===1)return new Response(wire,{headers:{'Content-Type':'text/event-stream'}});
+   const request=JSON.parse(body);
+   assert.equal(request.messages.find(m=>m.tool_calls)?.reasoning_content,reasoning.repeat(20000));
+   return Response.json({choices:[{finish_reason:'stop',message:{content:'长流正常完成。'}}]});
+ });
+ const result=await runAssistant({baseUrl:'https://example.com',model:'mock',consent:true},demoState(),'长流测试',{onEvent:e=>events.push(e)});
+ assert.equal(result.content,'长流正常完成。');assert.equal(requests,2);
+ assert.ok(!JSON.stringify(events).includes(reasoning));
+});
+
+test('provider streaming still bounds accumulated payload and reports output truncation accurately',async t=>{
+ const {callModel}=await import('../src/ai.mjs');
+ const frame='data: '+JSON.stringify({choices:[{delta:{reasoning_content:'x'.repeat(100000)}}]})+'\n\n';
+ const mock=t.mock.method(globalThis,'fetch',async()=>new Response(frame.repeat(41),{headers:{'Content-Type':'text/event-stream'}}));
+ await assert.rejects(callModel({baseUrl:'https://example.com',model:'mock'},[],{onEvent:()=>{}}),e=>e.code==='AI_RESPONSE_SIZE');
+ mock.mock.mockImplementation(async()=>new Response('data: {"choices":[{"delta":{"content":"未完成"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',{headers:{'Content-Type':'text/event-stream'}}));
+ await assert.rejects(callModel({baseUrl:'https://example.com',model:'mock'},[],{onEvent:()=>{}}),e=>e.code==='AI_OUTPUT_LIMIT');
+});
+
+test('multi-asset analysis can finish after more than eight tools and five model requests',async t=>{
+ const {runAssistant}=await import('../src/ai.mjs');let requests=0,executed=0;
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+   const request=JSON.parse(body);requests++;
+   if(requests<=6)return Response.json({choices:[{finish_reason:'tool_calls',message:{content:null,tool_calls:[0,1].map(i=>({id:`read-${requests}-${i}`,type:'function',function:{name:'get_market_data',arguments:'{"market":"US"}'}}))}}]});
+   assert.equal(request.messages.filter(m=>m.role==='tool').length,12);
+   return Response.json({choices:[{finish_reason:'stop',message:{content:'多标的分析完成。'}}]});
+ });
+ const result=await runAssistant({baseUrl:'https://example.com',model:'mock',consent:true},demoState(),'多标的分析',{services:{getMarketData:async()=>{executed++;return {market:'US',date:'2026-10-23'};}}});
+ assert.equal(result.content,'多标的分析完成。');assert.equal(requests,7);assert.equal(executed,12);assert.equal(result.toolsUsed.length,12);
+});
+
+test('tool and request budgets reserve a tool-free summary with committed results',async t=>{
+ const {runAssistant}=await import('../src/ai.mjs');
+ for(const batchSize of [1,7]){
+   let requests=0,executed=0;
+   const mock=t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+     const request=JSON.parse(body);requests++;
+     if(request.tool_choice==='none'){
+       assert.equal(request.tools,undefined);
+       assert.match(request.messages[0].content,/根据已经取得的结果直接完成回答/);
+       assert.equal(request.messages.filter(m=>m.role==='tool').length,batchSize===1?12:49);
+       if(batchSize===7)assert.match(request.messages.at(-1).content,/此工具未执行/);
+       return Response.json({choices:[{finish_reason:'stop',message:{content:'已有结果已汇总，缺失部分尚未核实。'}}]});
+     }
+     assert.ok(requests<=12);
+     return Response.json({choices:[{finish_reason:'tool_calls',message:{content:null,tool_calls:Array.from({length:batchSize},(_,i)=>({id:`budget-${requests}-${i}`,type:'function',function:{name:'get_market_data',arguments:'{"market":"US"}'}}))}}]});
+   });
+   try{
+     const result=await runAssistant({baseUrl:'https://example.com',model:'mock',consent:true},demoState(),'预算收尾测试',{services:{getMarketData:async()=>{executed++;return {market:'US',date:'2026-10-23'};}}});
+     assert.equal(result.content,'已有结果已汇总，缺失部分尚未核实。');
+     assert.equal(requests,batchSize===1?13:8);assert.equal(executed,batchSize===1?12:48);
+     assert.equal(result.toolsUsed.filter(x=>!x.ok).length,batchSize===1?0:1);
+   }finally{mock.mock.restore();}
+ }
+});
+
 test('关闭持仓外发时，当前与试算快照均不泄露账户及持仓名称',()=>{
   const s=demoState();s.assets[1].issuer='不应外发的发行人';s.assets[1].account='不应外发的账号';s.assets[1].name='不应外发的持仓';s.policy.issuerLimit=1;
   const scenario=simulate(s,{kind:'buy',amount:1000,target:'不应外发的目标'});

@@ -82,7 +82,26 @@ test('调用次数限制保存在持久文档中，达到限制时不会重试�
  const runtime=createAssistantRuns(store,{dataDir:dir,services:()=>({getMarketData:async()=>({date:'2026-10-23'})})});
  t.after(async()=>{await runtime.close();store.close();rmSync(dir,{recursive:true,force:true});});let calls=0;
  t.mock.method(globalThis,'fetch',async()=>{calls++;return tool();});
- const run=await runtime.start('虚构循环测试','limit-test');await assert.rejects(within(run.promise),e=>e.code==='AI_CALL_LIMIT');assert.equal(calls,5);assert.equal(store.messages().length,0);
+ const run=await runtime.start('虚构循环测试','limit-test');await assert.rejects(within(run.promise),e=>e.code==='AI_CALL_LIMIT');assert.equal(calls,13);assert.equal(store.messages().length,0);
+});
+
+test('临近预算时重启仍保留调用计数与工具结果，恢复后完成无工具总结',async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'finance-durable-summary-')),store=openStore(dir);store.saveConfig(config);
+ let runtime,requests=0,executed=0,reached;const waiting=new Promise(r=>reached=r);
+ const services=()=>({getMarketData:async()=>{executed++;return {date:'2026-10-23'};}});
+ t.mock.method(globalThis,'fetch',async(_url,{body,signal})=>{
+   const input=JSON.parse(body);requests++;
+   if(requests<12)return reply({content:null,tool_calls:[{id:`saved-${requests}`,type:'function',function:{name:'get_market_data',arguments:'{"market":"HK"}'}}]});
+   if(requests===12)return new Promise((_,reject)=>{reached();signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});
+   assert.equal(input.tool_choice,'none');assert.equal(input.tools,undefined);
+   assert.equal(input.messages.filter(m=>m.role==='tool').length,11);
+   return reply({content:'恢复后根据已有资料完成总结。'});
+ });
+ runtime=createAssistantRuns(store,{dataDir:dir,services});
+ t.after(async()=>{await runtime.close();store.close();rmSync(dir,{recursive:true,force:true});});
+ await runtime.start('虚构预算恢复测试','budget-resume');await within(waiting);await within(runtime.close());
+ runtime=createAssistantRuns(store,{dataDir:dir,services});const result=await within((await runtime.resume()).promise);
+ assert.equal(result.content,'恢复后根据已有资料完成总结。');assert.equal(requests,13);assert.equal(executed,11);assert.equal(store.messages().length,2);
 });
 
 test('删除正在回答的对话会停止持久任务，不复活记录，也不影响另一段对话',async t=>{

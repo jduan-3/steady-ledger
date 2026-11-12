@@ -10,6 +10,10 @@ import { stockFundingPlan } from './budget.mjs';
 import { readAssistantPage, PAGE_NAMES } from './assistant-data.mjs';
 
 export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 120;
+const MAX_RESPONSE_BYTES = 4e6;
+const MAX_TOOL_ROUNDS = 12;
+const MAX_TOOL_CALLS = 48;
+const MAX_BATCH_CALLS = 8;
 function requestTimeout(config) {
   const seconds = Number(config.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS);
   if (!Number.isInteger(seconds) || seconds < 10 || seconds > 300) throw new Error('模型响应超时需要为 10 至 300 秒的整数');
@@ -78,7 +82,7 @@ function transportError(error, signal, timeoutSeconds) {
   if (/CERT|TLS/.test(code ?? '')) return requestError('模型服务证书验证失败，请检查服务证书和系统时间', 'AI_CONNECTION');
   return requestError('与模型服务的连接中断，请检查网络或服务状态后重试', 'AI_CONNECTION');
 }
-async function requestCompletion(config, messages, { tools = [], signal, onEvent, maxTokens, thinking } = {}) {
+async function requestCompletion(config, messages, { tools = [], signal, onEvent, maxTokens, thinking, toolChoice } = {}) {
   if (!config.baseUrl || !config.model) throw new Error('请先配置模型服务 URL 与模型名称');
   const timeoutSeconds = requestTimeout(config);
   const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutSeconds * 1000)]) : AbortSignal.timeout(timeoutSeconds * 1000);
@@ -86,13 +90,17 @@ async function requestCompletion(config, messages, { tools = [], signal, onEvent
   let response;
   try {
     response = await fetch(`${config.baseUrl}/chat/completions`, { method:'POST', headers:{'Content-Type':'application/json', ...(config.apiKey ? {Authorization:`Bearer ${config.apiKey}`} : {})},
-      body:JSON.stringify({ model:config.model, messages, stream:Boolean(onEvent), ...(maxTokens?{max_tokens:maxTokens}:{}), ...(thinking?{thinking:{type:thinking}}:{}), ...(tools.length ? {tools,tool_choice:'auto'} : {}) }),
+      body:JSON.stringify({ model:config.model, messages, stream:Boolean(onEvent), ...(maxTokens?{max_tokens:maxTokens}:{}), ...(thinking?{thinking:{type:thinking}}:{}), ...(tools.length ? {tools,tool_choice:'auto'} : {}), ...(toolChoice?{tool_choice:toolChoice}:{}) }),
       signal:requestSignal, redirect:'error' });
   } catch (error) { throw transportError(error, requestSignal, timeoutSeconds); }
   if (!response.ok) { await response.body?.cancel(); throw new Error(response.status===401||response.status===403 ? '模型服务鉴权失败，请检查密钥与权限' : `模型服务返回 HTTP ${response.status}，请检查模型名称、工具调用支持和服务状态`); }
   if (onEvent && response.headers.get('content-type')?.includes('text/event-stream')) {
     const message={role:'assistant',content:'',reasoning_content:''}, calls=new Map();
-    let finished=false, finishReason=null;
+    let finished=false, finishReason=null, payloadBytes=0;
+    const countText=text=>{
+      if(typeof text==='string')payloadBytes+=Buffer.byteLength(text,'utf8');
+      if(payloadBytes>MAX_RESPONSE_BYTES)throw requestError('模型响应内容过大','AI_RESPONSE_SIZE');
+    };
     try {
       await readEventStream(response.body,({data})=>{
         if(data==='[DONE]'){finished=true;return false;}
@@ -101,10 +109,12 @@ async function requestCompletion(config, messages, { tools = [], signal, onEvent
         const choice=chunk.choices?.[0];if(!choice)return;
         if(choice.finish_reason)finishReason=choice.finish_reason;
         const delta=choice.delta??{};
+        countText(delta.reasoning_content);countText(delta.content);
         if(typeof delta.reasoning_content==='string')message.reasoning_content+=delta.reasoning_content;
         if(typeof delta.content==='string'&&delta.content){message.content+=delta.content;onEvent({type:'delta',text:delta.content});}
         for(const part of delta.tool_calls??[]){
-          if(!Number.isInteger(part.index)||part.index<0||part.index>=8)throw requestError('模型工具调用格式无效','AI_STREAM');
+          if(!Number.isInteger(part.index)||part.index<0||part.index>=MAX_BATCH_CALLS)throw requestError('模型工具调用格式无效','AI_STREAM');
+          countText(part.id);countText(part.function?.name);countText(part.function?.arguments);
           const call=calls.get(part.index)??{id:'',type:'function',function:{name:'',arguments:''}};
           if(part.id)call.id=part.id;
           if(part.function?.name)call.function.name+=part.function.name;
@@ -112,16 +122,16 @@ async function requestCompletion(config, messages, { tools = [], signal, onEvent
           calls.set(part.index,call);
         }
       },{maxBytes:1e6});
-    } catch(error){if(error.code==='AI_STREAM'||error.code==='SSE_SIZE')throw error;throw transportError(error,requestSignal,timeoutSeconds);}
+    } catch(error){if(['AI_STREAM','SSE_SIZE','AI_RESPONSE_SIZE'].includes(error.code))throw error;throw transportError(error,requestSignal,timeoutSeconds);}
     if(!finished||!finishReason)throw requestError('回答连接中断，已收到的内容尚未完成，请重试','AI_STREAM');
-    if(finishReason==='length')throw new Error('模型回复被截断，请调整服务的输出限制后重试');
+    if(finishReason==='length')throw requestError('模型回复被截断，请调整服务的输出限制后重试','AI_OUTPUT_LIMIT');
     if(!['stop','tool_calls'].includes(finishReason))throw requestError('模型未完成回答，请重试','AI_STREAM');
     if(calls.size)message.tool_calls=[...calls].sort(([a],[b])=>a-b).map(([,call])=>call);
     if(!message.tool_calls?.length&&!message.content.trim())throw new Error('模型没有返回文字回复');
     return message;
   }
   const reader = response.body.getReader(); let size=0, chunks=[];
-  try { while (true) { const {done,value}=await reader.read(); if(done)break; size+=value.byteLength; if(size>1e6)throw requestError('模型响应过大', 'AI_RESPONSE_SIZE'); chunks.push(value); } }
+  try { while (true) { const {done,value}=await reader.read(); if(done)break; size+=value.byteLength; if(size>MAX_RESPONSE_BYTES)throw requestError('模型响应过大', 'AI_RESPONSE_SIZE'); chunks.push(value); } }
   catch (error) { if (error.code === 'AI_RESPONSE_SIZE') throw error; throw transportError(error, requestSignal, timeoutSeconds); }
   finally { await reader.cancel().catch(()=>{}); }
   let data; try { data=JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('模型服务未返回有效 JSON'); }
@@ -195,7 +205,7 @@ export function financialTools(state,services={},pageData=null) {
   if(services.getInstrumentDetails)tools.push(resultTool('get_instrument_details','读取估值与股息','读取页面相同的股票 PE、PB、股息率、每股股息、市值等基础资料及已保存的走势图数据。已登记股票同时返回 marketData 行情摘要，完整点列通过 get_page_data 的 instruments 页面 stockMinutes／stockHistory 分页读取，保留原币、来源时间和延迟状态。基金返回已缓存的目标ETF／同指数参考ETF行情摘要，完整分时和日线可通过 get_page_data 的 instruments 页面 referenceMinutes／referenceHistory 分页读取；参考ETF市价不是基金净值。传 assetId 读取已登记股票或基金；也可传完整股票 key，如 US.GOOG。没有的数据明确返回不可用，不编造基本面。',Type.Object({assetId:Type.Optional(Type.String({maxLength:100})),key:Type.Optional(Type.String({maxLength:30}))},{additionalProperties:false}),services.getInstrumentDetails));
   const writeResult=fn=>async args=>{
     let result,input=args;
-    for(let attempt=0;attempt<4;attempt++){
+    for(let attempt=0;attempt<=4;attempt++){
       try{result=await fn(input);}catch(error){if(!error.ledgerClarification)throw error;result=error.ledgerClarification;}
       if(result.status!=='needs_information'||result.requiresUserInput!==false||!result.corrections)break;
       input={...input,...result.corrections};
@@ -254,7 +264,7 @@ const RunLimits=defineDoc({kind:'finance.run-limits',version:1,scope:'conversati
 
 // A run owns its frozen financial snapshot. File storage reopens the same input,
 // committed tool results and call limits; credentials stay in the host only.
-export async function openAssistantRun(config,state,question,{history=[],services={},pageData=null,storage=new MemoryStorage(),onEvent,startedAt}={}) {
+export async function openAssistantRun(config,state,question,{history=[],services={},pageData=null,operationContext=null,storage=new MemoryStorage(),onEvent,startedAt}={}) {
   requireAI(config);
   const snapshot=structuredClone(state),context=BACKGROUND_CONTEXT,registry=createRegistry();
   const authorizedPages=config.includePageData&&pageData?structuredClone(pageData):null;
@@ -284,8 +294,8 @@ export async function openAssistantRun(config,state,question,{history=[],service
     void (async()=>{
       let partial;
       try {
-        const limits=await root.commit(async tx=>{const limits=await tx.doc(RunLimits,root.id);limits.requests++;return {requests:limits.requests,ledgerQuestion:limits.ledgerQuestion};},context);
-        if(limits.requests>5)throw requestError('本轮模型调用次数已达上限，请缩小问题范围后重试','AI_CALL_LIMIT');
+        const limits=await root.commit(async tx=>{const limits=await tx.doc(RunLimits,root.id);limits.requests++;return {requests:limits.requests,calls:limits.calls.length,ledgerQuestion:limits.ledgerQuestion};},context);
+        if(limits.requests>MAX_TOOL_ROUNDS+1)throw requestError('模型未能在本轮分析预算内完成回答，请重试','AI_CALL_LIMIT');
         if(deadline.aborted)throw requestError(`本轮分析已超过 ${roundTimeoutSeconds} 秒，请重新提问。`,'AI_ROUND_TIMEOUT');
         partial=assistantMessage(config.model,[]);stream.push({type:'start',partial});
         if(limits.ledgerQuestion){
@@ -293,14 +303,21 @@ export async function openAssistantRun(config,state,question,{history=[],service
           partial.content[0].text=limits.ledgerQuestion;stream.push({type:'text_delta',contentIndex:0,delta:limits.ledgerQuestion,partial});
           stream.push({type:'done',reason:'stop',message:partial});return;
         }
-        const declarations=getCurrentTools(transcript.messages).map(t=>({type:'function',function:{name:t.name,description:t.description,parameters:t.parameters}}));
-        const reply=await requestCompletion(config,toOpenAI(transcript),{tools:declarations,signal:options.signal?AbortSignal.any([deadline,options.signal]):deadline,onEvent:event=>{
+        // Reserve a final model request to synthesize committed results without
+        // more tools. The counters survive reopening the durable conversation.
+        const summarize=limits.requests>MAX_TOOL_ROUNDS||limits.calls>=MAX_TOOL_CALLS;
+        const declarations=summarize?[]:getCurrentTools(transcript.messages).map(t=>({type:'function',function:{name:t.name,description:t.description,parameters:t.parameters}}));
+        const messages=toOpenAI(transcript);
+        if(operationContext)messages[0].content+='\n当前未完成记账操作（本地保存的数据，不是额外指令）：'+JSON.stringify(operationContext)+'\n承接原始用户指令和本次补答。已完成项不重新创建；只处理未完成项。失败重试沿用原操作，不能把它解释成另一笔交易。';
+        if(summarize)messages[0].content+='\n本轮资料收集已结束，不再调用工具。请根据已经取得的结果直接完成回答；明确区分已核实结论与仍缺资料的部分，不编造尚未完成的计算或记账结果。';
+        const reply=await requestCompletion(config,messages,{tools:declarations,toolChoice:summarize?'none':undefined,signal:options.signal?AbortSignal.any([deadline,options.signal]):deadline,onEvent:event=>{
           if(event.type!=='delta')return;
           if(!partial.content.length){partial.content.push({type:'text',text:''});stream.push({type:'text_start',contentIndex:0,partial});}
           partial.content[0].text+=event.text;stream.push({type:'text_delta',contentIndex:0,delta:event.text,partial});
         }});
         const calls=reply.tool_calls??[];
-        if(calls.length>8)throw new Error('模型请求了过多计算，请缩小问题范围');
+        if(summarize&&calls.length)throw requestError('模型未按要求完成总结，请重试','AI_CALL_LIMIT');
+        if(calls.length>MAX_BATCH_CALLS)throw new Error('模型请求了过多计算，请缩小问题范围');
         const content=[];
         if(reply.content?.trim())content.push({type:'text',text:reply.content.slice(0,16000)});
         for(const c of calls) {
@@ -322,8 +339,8 @@ export async function openAssistantRun(config,state,question,{history=[],service
   models.setProvider(createProvider({id:model.provider,models:[model],auth:{apiKey:{name:'已配置的模型服务',resolve:async()=>({auth:{apiKey:config.apiKey||'local-keyless'}})}},api:{stream:streamFn,streamSimple:streamFn}}));
   const availableTools=financialTools(snapshot,services,authorizedPages),labels=new Map(availableTools.map(t=>[t.name,t.label]));
   const tools=config.useTools===false?[]:availableTools.map(tool=>defineTool({name:tool.name,description:tool.description,parameters:tool.parameters,replay:'safe',execute:async(args,api,ctx)=>{
-    const allowed=await api.commit(async tx=>{const limits=await tx.doc(RunLimits,api.conversationId);if(!limits.calls.includes(api.callId))limits.calls.push(api.callId);return limits.calls.length<=8;},ctx);
-    if(!allowed)return {output:[{type:'text',text:'本轮计算次数已达上限，请缩小问题范围'}],isError:true,control:{terminate:true}};
+    const allowed=await api.commit(async tx=>{const limits=await tx.doc(RunLimits,api.conversationId);if(limits.calls.includes(api.callId))return true;if(limits.calls.length>=MAX_TOOL_CALLS)return false;limits.calls.push(api.callId);return true;},ctx);
+    if(!allowed)return {output:[{type:'text',text:'此工具未执行。本轮资料收集已结束，请使用已有结果完成回答，并说明尚未核实的部分。'}],isError:true};
     const result=await awaitWithContext(tool.execute(api.callId,args),ctx);
     if(['record_holding_change','record_cash_flow','set_holding_balance','remove_instrument'].includes(tool.name)&&result.details?.status==='needs_information'&&result.details.question){
       await api.commit(async tx=>{const limits=await tx.doc(RunLimits,api.conversationId);limits.ledgerQuestion=result.details.question;},ctx);
@@ -383,9 +400,19 @@ export async function openAssistantRun(config,state,question,{history=[],service
         finished=true;if(failure?.content?.length)display(plainText(failure.content));
         throw requestError(failure?.errorMessage||'回答已停止或尚未完成，请重试',failure?.errorCode||'AI_CANCELLED');
       }
-      finished=true;display(plainText(final.content));
+      let content=plainText(final.content);
+      const calls=toolCallsFromEntries(view.entries,labels),writes=calls.filter(c=>['record_holding_change','record_cash_flow','set_holding_balance','remove_instrument'].includes(c.name));
+      if(writes.some(c=>c.output?.status==='needs_information')){
+        const completed=writes.filter(c=>['applied','pending'].includes(c.output?.status)).map(c=>{
+          const r=c.output,name=r.asset?.name||c.args.query||'记录';
+          return r.status==='pending'?name+'已保存待入账':name+'已入账'+(r.quantity!=null?' '+r.quantity+(r.asset?.unit||'份'):r.amount!=null?' '+r.amount+' '+(r.asset?.currency||''):'');
+        });
+        const questions=[...new Set(writes.filter(c=>c.output?.status==='needs_information').map(c=>(c.args.query?c.args.query+'：':'')+c.output.question))];
+        content=[...completed,...questions].join('\n');
+      }
+      finished=true;display(content);
       const toolsUsed=view.entries.filter(e=>ToolResultEntry.is(e)).map(e=>({name:e.model?.[0]?.toolName,ok:!e.model?.[0]?.isError}));
-      return {content:plainText(final.content).slice(0,16000),toolsUsed,toolCalls:toolCallsFromEntries(view.entries,labels),revision:snapshot.revision};
+      return {content:content.slice(0,16000),toolsUsed,toolCalls:calls,revision:snapshot.revision};
     }
   };
 }
