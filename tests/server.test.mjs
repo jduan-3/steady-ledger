@@ -249,6 +249,8 @@ test('股票图表接口需要登录，缓存刷新独立于正式估值和账�
 test('自然语言记账先追问资金来源，后续确认额外投入后通过 harness 更新持仓且不扣现金',async t=>{
   const original='我在2026-10-29加了1000元科创';
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    if(n>=3)n--;
     if(n===1||n===2)return toolReply('record_holding_change',{query:'科创',side:'buy',amount:1000,date:'2026-10-29',evidence:original,...(n===2?{cashSource:'outside'}:{})});
     const result=JSON.parse(payload.messages.at(-1).content);
     assert.equal(result.status,'applied');assert.equal(result.after.quantity,600);return {content:'已按指定日期净值估算记入1000元加仓，使用额外投入。'};
@@ -257,7 +259,7 @@ test('自然语言记账先追问资金来源，后续确认额外投入后通�
   state.assets=[{id:'cash',name:'现金',type:'cash',currency:'CNY',value:10000,asOf:date},{id:'star',name:'科创基金',type:'fund',fund:{code:'011609',autoNav:true},currency:'CNY',value:200,quantity:100,unit:'份',asOf:date,costBasis:{amount:100,quantity:100,currency:'CNY'}}];app.store.save(state,state.revision);app.store.setKV('fund_nav:011609',{date,price:2,basis:'unit_nav',currency:'CNY'});
   await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
   const first=await request('/chat','POST',{message:original,requestId:'ask-source'});assert.equal(app.store.state().assets[1].quantity,100);assert.equal(app.store.ledgerEntries().length,0);
-  assert.match(first.body.content,/现有现金.*额外投入/);assert.equal(upstream.calls.length,1);
+  assert.match(first.body.content,/现有现金.*额外投入/);assert.equal(upstream.calls.length,2);
   const second=await request('/chat','POST',{message:'额外投入',conversationId:first.body.conversation.id,requestId:'confirm-source'});
   assert.equal(second.status,200);assert.equal(second.body.state.assets[1].quantity,600);assert.equal(second.body.state.assets[0].value,10000);assert.equal(second.body.ledgerEntries[0].status,'applied');assert.equal(second.body.messages.at(-1).metadata.toolCalls[0].name,'record_holding_change');
   assert.ok(upstream.calls[0].messages[0].content.includes('必须先问'));assert.ok(upstream.calls[2].messages[0].content.includes('本地账本'));
@@ -265,6 +267,8 @@ test('自然语言记账先追问资金来源，后续确认额外投入后通�
 test('口语买入原话经日期补答完成模型与记账工具往返，不要求重说金额和资金来源',async t=>{
   const original='我买了 1000 的科创50 几天 我自己有的那个 基金 从现金里加入的',reply='2026-10-29买的';
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    if(n>=3)n--;
     if(n===1||n===2)return toolReply('record_holding_change',{query:'买入科创50基金1000元，从现金里加入',evidence:n===1?original:original+'。'+reply,side:'buy',assetId:'star',amount:1000,cashSource:'registered',...(n===2?{date:'2026-10-29'}:{})});
     const output=JSON.parse(payload.messages.at(-1).content);
     assert.equal(output.status,'applied');assert.equal(output.after.cash,9000);assert.equal(output.date,'2026-10-29');return {content:'已按指定日期净值估算入账，现金扣除1000元。'};
@@ -275,17 +279,19 @@ test('口语买入原话经日期补答完成模型与记账工具往返，不�
   await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
   const first=await request('/chat','POST',{message:original,requestId:'colloquial-date-question'});
   assert.equal(first.status,200);assert.equal(first.body.ledgerEntries.length,0);assert.equal(first.body.state.assets[0].value,10000);
-  assert.match(first.body.content,/哪天/);assert.equal(upstream.calls.length,1);
+  assert.match(first.body.content,/哪天/);assert.equal(upstream.calls.length,2);
   const second=await request('/chat','POST',{message:reply,conversationId:first.body.conversation.id,requestId:'colloquial-date-answer'});
   assert.equal(second.status,200);assert.equal(second.body.ledgerEntries[0].status,'applied');assert.equal(second.body.state.assets[0].value,9000);assert.equal(second.body.state.assets[1].quantity,600);
-  assert.ok(upstream.calls[1].messages.some(m=>m.role==='user'&&m.content===original));
-  assert.ok(upstream.calls[1].messages[0].content.includes('不要求用户重说整句'));assert.ok(upstream.calls[1].messages[0].content.includes('持仓、成本和现金都尚未更新'));
+  assert.ok(upstream.calls[2].messages.some(m=>m.role==='user'&&m.content===original));
+  assert.ok(upstream.calls[2].messages[0].content.includes('不要求用户重说整句'));assert.ok(upstream.calls[2].messages[0].content.includes('持仓、成本和现金都尚未更新'));
   const replay=await request('/chat','POST',{message:reply,conversationId:first.body.conversation.id,requestId:'colloquial-date-answer'});
-  assert.equal(replay.status,200);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(replay.body.state.assets[0].value,9000);assert.equal(upstream.calls.length,3);
+  assert.equal(replay.status,200);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(replay.body.state.assets[0].value,9000);assert.equal(upstream.calls.length,4);
 });
 test('harness 区分校准与买入，缺现金处理直接追问，补答后切换工具并按用户总份额纠正参数',async t=>{
   const original='请更新科创持仓，目前持有23671.48份，单位成本1.1141元';
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    if(n>=3)n--;
     if(n===1)return toolReply('set_holding_balance',{query:'科创',evidence:original,quantity:23671.48,averageCost:1.1141});
     if(n===2)return toolReply('record_holding_change',{query:'科创',evidence:original+'；现金-1000',side:'buy',quantity:3218.48,cashSource:'registered'});
     const output=JSON.parse(payload.messages.at(-1).content);
@@ -297,17 +303,19 @@ test('harness 区分校准与买入，缺现金处理直接追问，补答后切
   app.store.save(state,state.revision);app.store.setKV('fund_nav:011609',{date,price:0.9132,basis:'unit_nav',currency:'CNY'});
   await request('/config','PUT',{baseUrl:upstream.baseUrl,model:'synthetic',consent:true,includeHistory:true,allowLedgerWrites:true});
   const first=await request('/chat','POST',{message:original,requestId:'harness-balance-start'});
-  assert.equal(first.status,200);assert.match(first.body.content,/现金保持不变/);assert.equal(upstream.calls.length,1);assert.equal(first.body.ledgerEntries.length,0);
+  assert.equal(first.status,200);assert.match(first.body.content,/现金保持不变/);assert.equal(upstream.calls.length,2);assert.equal(first.body.ledgerEntries.length,0);
   const second=await request('/chat','POST',{message:'现金 -1000 其他的不管',conversationId:first.body.conversation.id,requestId:'harness-balance-cash'});
   assert.equal(second.status,200);assert.equal(second.body.state.assets[1].quantity,23671.48);assert.equal(second.body.state.assets[1].costBasis.amount,26372.4);assert.equal(second.body.state.assets[0].value,9000);assert.equal(second.body.ledgerEntries.length,1);
-  assert.equal(upstream.calls.length,4);assert.ok(upstream.calls[0].tools.some(t=>t.function.name==='set_holding_balance'));
+  assert.equal(upstream.calls.length,5);assert.ok(upstream.calls[0].tools.some(t=>t.function.name==='set_holding_balance'));
   const replay=await request('/chat','POST',{message:'现金 -1000 其他的不管',conversationId:first.body.conversation.id,requestId:'harness-balance-cash'});
-  assert.equal(replay.status,200);assert.equal(replay.body.state.assets[0].value,9000);assert.equal(upstream.calls.length,4);
+  assert.equal(replay.status,200);assert.equal(replay.body.state.assets[0].value,9000);assert.equal(upstream.calls.length,5);
 });
 test('harness 原样回放科创50亏损校准，短答不变后正确保存24775.11份，不重复询问标的',async t=>{
   const original='科创50 的数据更新一下， 持仓收益率是 -百分之16.03 亏损时 4283.93';
   const replies=[original,'24775.11 份','单位成本 1.0790','不变'];
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    n=n<=7?Math.ceil(n/2):n-3;
     if(n<=4)return toolReply('set_holding_balance',{
       query:'科创50',assetId:'star',evidence:replies.slice(0,n).join('；'),
       // The model initially invents quantity/cost, then supplies a wrong quantity
@@ -331,11 +339,11 @@ test('harness 原样回放科创50亏损校准，短答不变后正确保存2477
       assert.equal(result.body.ledgerEntries.length,0);assert.equal(result.body.state.assets[1].quantity,100);
     }
   }
-  assert.equal(upstream.calls.length,5);assert.match(result.body.content,/已校准/);
+  assert.equal(upstream.calls.length,8);assert.match(result.body.content,/已校准/);
   assert.equal(result.body.state.assets[1].quantity,24775.11);assert.equal(result.body.state.assets[1].costBasis.amount,26732.34);
   assert.equal(result.body.state.assets[0].value,10000);assert.equal(result.body.ledgerEntries.length,1);
   const replay=await request('/chat','POST',{message:'不变',conversationId,requestId:'star-exact-3'});
-  assert.equal(replay.status,200);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,5);
+  assert.equal(replay.status,200);assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,8);
 });
 test('harness 本地核验能恢复超过6轮的未完成校准，模型上下文仍限定最近6轮',async t=>{
   const original='科创50 的数据更新一下， 持仓收益率是 -百分之16.03 亏损时 4283.93';
@@ -639,6 +647,8 @@ test('harness 承接成本是和份额是，单位成本补答后完成同一笔
   const original='科创50 我需要更新一下持仓， 持仓收益率是 -百分之16.03 其他都不变';
   const details='成本是 1.0790 份额是 24775.11    持仓收益率是 -百分之16.03';
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    if(n>=4)n--;
     if(n===1)return {content:'显示的成本金额（或持仓金额）是多少？有这一个数我就能直接把账本校准到位。'};
     if(n<=3)return toolReply('set_holding_balance',{query:'科创50',assetId:'star',evidence:n===2?details:'成本是 1.0790',quantity:24775.11,averageCost:1.079,cashDelta:0});
     const result=JSON.parse(payload.messages.at(-1).content);
@@ -655,11 +665,13 @@ test('harness 承接成本是和份额是，单位成本补答后完成同一笔
   assert.equal(second.status,200);assert.match(second.body.content,/单位成本/);assert.equal(second.body.ledgerEntries.length,0);
   const third=await request('/chat','POST',{message:'成本是 1.0790',conversationId,requestId:'prefixed-cost'});
   assert.equal(third.status,200);assert.match(third.body.content,/完成校准/);assert.equal(third.body.ledgerEntries.length,1);
-  assert.equal(third.body.state.assets[1].quantity,24775.11);assert.equal(third.body.state.assets[1].costBasis.amount,26732.34);assert.equal(third.body.state.assets[0].value,10000);assert.equal(upstream.calls.length,4);
+  assert.equal(third.body.state.assets[1].quantity,24775.11);assert.equal(third.body.state.assets[1].costBasis.amount,26732.34);assert.equal(third.body.state.assets[0].value,10000);assert.equal(upstream.calls.length,5);
 });
 
 test('harness 删除工具按范围补答执行，持仓自选独立且不会再转交手动操作',async t=>{
   const upstream=await modelServer(t,(payload,n)=>{
+    if(payload.tool_choice==='none'){assert.equal(payload.tools,undefined);return {content:JSON.parse(payload.messages.at(-1).content).question};}
+    if(n>=3)n--;
     assert.ok(payload.tools.some(t=>t.function.name==='remove_instrument'));
     if(n===1||n===2)return toolReply('remove_instrument',{query:'科创',target:n===1?'holding':'watchlist'});
     const result=JSON.parse(payload.messages.at(-1).content);assert.equal(result.status,'applied');assert.equal(result.target,'watchlist');
@@ -672,8 +684,8 @@ test('harness 删除工具按范围补答执行，持仓自选独立且不会再
   assert.equal(first.status,200);assert.match(first.body.content,/持仓.*自选/);assert.equal(first.body.ledgerEntries.length,0);
   const conversationId=first.body.conversation.id;
   const second=await request('/chat','POST',{message:'自选',conversationId,requestId:'remove-watch'});
-  assert.equal(second.status,200);assert.equal(second.body.state.fundWatchlist.length,0);assert.equal(second.body.state.assets.length,1);assert.match(second.body.content,/已移除/);assert.equal(upstream.calls.length,3);
-  const replay=await request('/chat','POST',{message:'自选',conversationId,requestId:'remove-watch'});assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,3);
+  assert.equal(second.status,200);assert.equal(second.body.state.fundWatchlist.length,0);assert.equal(second.body.state.assets.length,1);assert.match(second.body.content,/已移除/);assert.equal(upstream.calls.length,4);
+  const replay=await request('/chat','POST',{message:'自选',conversationId,requestId:'remove-watch'});assert.equal(replay.body.ledgerEntries.length,1);assert.equal(upstream.calls.length,4);
 });
 
 test('保存月末支出设置后执行到期扣减，刷新与重复保存不重复，页面返回记账状态',async t=>{

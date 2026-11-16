@@ -451,20 +451,19 @@ dialog:has(#price-history-view) .dialog-header>.icon-btn{flex-shrink:0}
 #price-history-view h3{font-size:14px;font-weight:600;color:var(--ink)}
 .history-chart-heading,.history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .history-chart-heading p{font-size:11px;color:var(--muted);margin-top:6px}
-.history-date-select{display:flex;align-items:center;gap:9px;font-size:11px;color:var(--muted)}
-.history-date-select select{max-width:148px;border:1px solid var(--line);border-radius:7px;padding:7px 8px;color:var(--ink);background:#fff;font-size:12px}
 .history-reading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:22px;font-variant-numeric:tabular-nums}
 .history-reading strong{display:block;font-size:30px;font-weight:600;letter-spacing:-.8px;line-height:1.2}
 .history-reading strong small{font-size:12px;font-weight:400;letter-spacing:0;color:var(--muted)}
 .history-reading span{display:block;font-size:11px;color:var(--muted);margin-top:7px}
 .history-daily{text-align:right}.history-daily span{margin:0 0 7px}.history-daily b{font-size:20px;font-weight:550}
 .price-history-chart{grid-template-columns:68px minmax(0,1fr);gap:12px;margin:24px 0 36px}
-.price-history-chart .trend-plot{height:200px}
+.price-history-chart .trend-plot{height:200px;cursor:crosshair}
 .price-history-chart .trend-y-axis{color:var(--muted)}
 .price-history-chart .trend-x-axis{font-size:10px}
 .history-guide{stroke:#c7d5c7;stroke-width:1;stroke-dasharray:3 5;vector-effect:non-scaling-stroke}
 .history-point{width:7px;height:7px;border-width:1.5px}
 .history-point.selected{width:10px;height:10px;z-index:1;box-shadow:0 0 0 4px #285c4812}
+.history-cursor-date{position:absolute;top:calc(100% + 8px);z-index:2;white-space:nowrap;background:#455f4f;color:#fff;border-radius:3px;padding:3px 6px;font-size:10px;line-height:1.4;font-variant-numeric:tabular-nums;pointer-events:none}
 .history-chart-note,.instrument-note,.instrument-source{font-size:11px;color:var(--muted);line-height:1.8;overflow-wrap:anywhere}
 .history-empty{padding:48px 12px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8;background:#f7f9f5;border-radius:9px}
 .instrument-basics{margin-top:24px;padding-top:22px;border-top:1px solid var(--line)}
@@ -516,8 +515,7 @@ dialog:has(#price-history-view) .dialog-header>.icon-btn{flex-shrink:0}
   dialog:has(#price-history-view) .dialog-header{padding:20px 18px 16px}
   dialog:has(#price-history-view) .dialog-header h2{font-size:16px}
   dialog:has(#price-history-view) .dialog-body{padding:20px 18px}
-  .history-chart-heading{align-items:flex-start;gap:10px}.history-date-select{flex-direction:column;align-items:flex-end;gap:5px}
-  .history-date-select select{font-size:11px;padding:6px;max-width:120px}
+  .history-chart-heading{align-items:flex-start;gap:10px}
   .history-reading{margin-top:20px}.history-reading strong{font-size:27px}.history-daily b{font-size:18px}
   .price-history-chart{grid-template-columns:54px minmax(0,1fr);gap:8px}
   .price-history-chart .trend-plot{height:170px}.price-history-chart .trend-x-axis{font-size:9px}

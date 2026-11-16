@@ -511,8 +511,31 @@ test('基金和股票历史展示真实价格点与日期间隔，点选只读�
  h.run("data.state.assets=[{id:'fund',name:'南方基金',type:'fund',currency:'CNY',quantity:100,fund:{code:'008164'},reported:{date:'2026-10-23',dividends:10}}];");
  await h.run("priceHistoryDialog('fund')");let html=h.nodes.get('#price-history-view').innerHTML;
  assert.match(html,/单位净值走势/);assert.match(html,/stroke-dasharray="4 5"/);assert.match(html,/\+10\.00%/);assert.match(html,/逐日明细/);assert.match(html,/已登记累计分红/);assert.ok(!html.includes('2026-10-21'));
- h.run("selectHistoryDate('2026-10-20')");html=h.nodes.get('#price-history-chart').innerHTML;assert.match(html,/2026-10-20/);assert.match(html,/class="muted">—/);assert.ok(!html.includes('+10.00%'));
+ assert.doesNotMatch(html,/data-history-date|选择日期/);assert.match(html,/data-history-plot/);
+ h.run("$('#price-history-chart')").querySelectorAll=()=>[];
+ h.run("selectHistoryDate('2026-10-20')");html=h.nodes.get('[data-history-reading]').innerHTML;assert.match(html,/2026-10-20/);assert.match(html,/class="muted">—/);assert.ok(!html.includes('+10.00%'));
  h.context.rows=rows;assert.match(h.run("priceHistoryChartHTML({type:'stock',currency:'CNY'},rows)"),/股价走势/);
+});
+test('净值图在整个绘图区按实际日期位置跟随鼠标，原位更新指示线和读数',async()=>{
+ const h=componentHarness();
+ h.run("activePriceHistory={asset:{type:'fund',currency:'CNY'},items:[{date:'2026-10-24',price:1.1,previous:{price:1}},{date:'2026-10-21',price:1},{date:'2026-10-20',price:0.9}],selectedDate:''};");
+ const root=h.run("$('#price-history-chart')"),reading=h.run("$('[data-history-reading]')"),guide=h.run("$('#price-history-chart .history-guide')"),cursor=h.run("$('[data-history-cursor-date]')");
+ root.innerHTML=h.run('priceHistoryChartHTML(activePriceHistory.asset,activePriceHistory.items)');const original=root.innerHTML;
+ let updates=0;guide.setAttribute=(name,value)=>{guide[name]=value;updates++;};cursor.style={};
+ const points=[['2026-10-20',4],['2026-10-21',27],['2026-10-24',96]].map(([date,x])=>({dataset:{date,historyX:String(x)},classList:{toggle(name,active){this[name]=active;}},setAttribute(name,value){this[name]=value;}}));
+ root.querySelectorAll=()=>points;
+ const plot={getBoundingClientRect:()=>({left:100,width:500}),querySelectorAll:()=>points};
+ const hover=x=>h.listeners.pointermove({clientX:100+x*5,target:{closest:selector=>selector==='[data-history-plot]'?plot:null}});
+ hover(60);assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-21');assert.match(reading.innerHTML,/2026-10-21/);assert.match(reading.innerHTML,/class="muted">—/);
+ assert.equal(guide.d,'M270 0V200');assert.equal(cursor.textContent,'2026-10-21');assert.equal(cursor.style.left,'27%');assert.equal(cursor.hidden,false);
+ assert.equal(points[1]['aria-pressed'],'true');assert.equal(points[1].classList.selected,true);assert.equal(points[2]['aria-pressed'],'false');
+ hover(61);assert.equal(updates,1);
+ hover(100);assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-24');assert.match(reading.innerHTML,/\+10\.00%/);assert.match(reading.innerHTML,/最新记录/);assert.equal(guide.d,'M960 0V200');assert.equal(cursor.style.transform,'translateX(-100%)');
+ hover(0);assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-20');assert.equal(guide.d,'M40 0V200');assert.equal(cursor.style.transform,'none');
+ await h.listeners.click({target:{closest:()=>({dataset:{action:'history-point',date:'2026-10-24'}})}});
+ assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-24');assert.equal(root.innerHTML,original);
+ h.run("activePriceHistory.items=[activePriceHistory.items[0]];activePriceHistory.selectedDate='';");points.splice(0,2);points[0].dataset.historyX='50';
+ hover(0);assert.equal(h.run('activePriceHistory.selectedDate'),'2026-10-24');assert.equal(guide.d,'M500 0V200');assert.equal(root.innerHTML,original);
 });
 test('历史图表处理空、单点与平价，不画虚构走势，不产生 NaN 或 Infinity',()=>{
  const h=componentHarness();
@@ -560,7 +583,7 @@ test('任一股票图悬停同步更新价格与成交量，缺失成交量不�
  });
  root.querySelectorAll=selector=>selector==='[data-reference-hover]'?charts:selector==='[data-reference-latest]'?latest:[];
  root.querySelector=selector=>({'[data-reference-price-reading]':readings.price,'[data-reference-volume-reading]':readings.volume,'[data-reference-cursor-time="price"]':cursors.price,'[data-reference-cursor-time="volume"]':cursors.volume})[selector];
- const hover=(chart,index)=>h.listeners.pointermove({target:{closest:()=>({dataset:{chart,index:String(index)}})}});
+ const hover=(chart,index)=>h.listeners.pointermove({target:{closest:selector=>selector.includes('data-reference-hover')?{dataset:{chart,index:String(index)}}:null}});
  hover('price',0);
  assert.equal(h.run('activePriceHistory.referencePoint'),'2026-11-02 09:30');assert.equal(h.run('activePriceHistory.referenceVolumePoint'),'2026-11-02 09:30');
  for(const cursor of Object.values(cursors)){assert.equal(cursor.textContent,'09:30');assert.equal(cursor.hidden,false);assert.equal(cursor.style.left,'0.4%');}

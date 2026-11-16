@@ -554,7 +554,7 @@ test('简短现金补答必须紧接现金追问，不能从无关、已完成�
   }
   const history=[{role:'user',content:original},{role:'assistant',content:'现金保持不变吗？'}];
   const confused=await bind('啥意思','balance-confused',{history}).setHoldingBalance({...args,evidence:'啥意思'});
-  assert.equal(confused.status,'needs_information');
+  assert.equal(confused.status,'blocked');
   const result=await bind('不变，不要更新','balance-cancelled',{history}).setHoldingBalance({...args,evidence:'不变，不要更新'});
   assert.notEqual(result.status,'applied');assert.deepEqual(store.state({raw:true}),before);assert.equal(store.ledgerEntries().length,0);
 });
@@ -655,4 +655,68 @@ test('删除拒绝否定、假设、含糊目标、待入账和撤回授权，�
   store.postLedgerEntry({id:'pending-removal-test',asset:{id:'star'},status:'pending',signature:'pending-removal-test',generation:store.ledgerGeneration(),createdAt:now.toISOString()});
   const pending=await bind('删除科创持仓').removeInstrument(args);assert.equal(pending.status,'needs_information');assert.match(pending.question,/待入账/);
   store.saveConfig({allowLedgerWrites:false});await assert.rejects(bind('删除科创持仓').removeInstrument(args),/未开启|授权/);assert.deepEqual(store.state({raw:true}),before);
+});
+
+test('模型语义上下文承接真实科创补答，不依赖双方资金来源的固定措辞',async t=>{
+  for(const reply of ['是的 用的现有的人名币进行支付的','是的，用的现有的人民币进行支付的','对，就是账户里原先那笔钱'])await t.test(reply,async t=>{
+    const {store,bind}=setup(t),original='我买了 2000 的科创50';
+    const history=[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'这笔钱是用现有人民币现金支付，还是另外从外部投入的资金？确认后我就帮你记上。'}];
+    const args={query:'科创',side:'buy',amount:2000,cashSource:'registered',evidence:original,interpretation:{intent:'execute',userTurns:[original,reply],cashSourceQuote:reply}};
+    const call=()=>bind(reply,'semantic-buy',{history,startedAt:now.getTime()+86400000}).recordHoldingChange(args);
+    const result=await call();assert.equal(result.status,'applied');assert.equal(result.after.cash,8000);assert.equal(result.after.quantity,1100);assert.equal(result.date,date);
+    assert.equal((await call()).replayed,true);assert.equal(store.ledgerEntries().length,1);assert.equal(store.ledgerEntries()[0].evidence.text,original+'\n'+reply);
+  });
+});
+
+test('语义上下文也用于现金收支和持仓校准连续补答',async t=>{
+  const {store,bind}=setup(t),original='收到300元红包',reply='就放在咱们记过的那个账户里吧';
+  const cash=await bind(reply,'semantic-income',{history:[{role:'user',content:original},{role:'assistant',content:'放在哪个账户里？'}]}).recordCashFlow({evidence:original,side:'income',amount:300,description:'红包',interpretation:{intent:'execute',userTurns:[original,reply]}});
+  assert.equal(cash.after.cash,10300);
+  const balance='科创目前一共是500份，单位成本2元',confirm='钱没变，只把份额对上就行';
+  const result=await bind(confirm,'semantic-balance',{history:[{role:'user',content:balance},{role:'assistant',content:'这次现金需要怎么处理？'}]}).setHoldingBalance({query:'科创',evidence:balance,quantity:500,averageCost:2,cashDelta:0,interpretation:{intent:'execute',userTurns:[balance,confirm],cashDeltaQuote:confirm}});
+  assert.equal(result.status,'applied');assert.equal(store.state().assets[1].quantity,500);assert.equal(store.state().assets[0].value,10300);
+});
+
+test('语义原话引用不能伪造、跳轮、跨过已保存交易，解释请求不写账',async t=>{
+  const {store,bind}=setup(t),original='买入2000元科创',reply='用原先的钱',answer={role:'assistant',content:'资金怎么处理？'};
+  const args={query:'科创',evidence:original,side:'buy',amount:2000,cashSource:'registered',interpretation:{intent:'execute',userTurns:[original,reply],cashSourceQuote:reply}};
+  for(const history of [[],[{role:'user',content:'买入200元科创'},answer],[{role:'user',content:original},answer,{role:'user',content:'换个话题'},answer],...['applied','pending'].map(status=>[{role:'user',content:original},{...answer,metadata:{toolCalls:[{name:'record_holding_change',output:{status}}]}}])]){
+    await assert.rejects(bind(reply,'invalid-context',{history}).recordHoldingChange(args),e=>e.ledgerClarification?.reason==='invalid_context');
+  }
+  const history=[{role:'user',content:original},answer];
+  await assert.rejects(bind(reply,'disabled-context',{history,contextEnabled:false}).recordHoldingChange(args),/未启用/);
+  await assert.rejects(bind(reply,'fake-source',{history}).recordHoldingChange({...args,interpretation:{...args.interpretation,cashSourceQuote:'用现有人民币现金'}}),/用户原话/);
+  const explained=await bind('啥意思','explanation',{history}).recordHoldingChange(args);assert.equal(explained.status,'blocked');
+  assert.equal(store.ledgerEntries().length,0);assert.equal(store.state().assets[0].value,10000);
+});
+
+test('语义路径仍核对金额、单位、币种、方向、否定、假设和资金约束',async t=>{
+  const {store,bind}=setup(t);
+  for(const [question,changes] of [
+    ['用现有现金买入1000元科创',{amount:2000}],
+    ['用现有现金买入1000份科创',{}],
+    ['用现有现金买入1000美元科创',{}],
+    ['用现有现金卖出1000元科创',{}],
+    ['如果用现有现金买入1000元科创',{}],
+    ['没有买入1000元科创，用现有现金',{}]
+  ])await assert.rejects(bind(question,'semantic-invalid').recordHoldingChange({query:'科创',evidence:question,side:'buy',amount:1000,interpretation:{intent:'execute',userTurns:[question]},...changes}));
+  const question='买入1000元科创';
+  const missing=await bind(question,'missing-source').recordHoldingChange({query:'科创',evidence:question,side:'buy',amount:1000,cashSource:'registered',interpretation:{intent:'execute',userTurns:[question]}});
+  assert.equal(missing.status,'needs_information');assert.match(missing.question,/现有现金/);
+  assert.equal(store.ledgerEntries().length,0);
+});
+
+test('旧版失败对话解释后可继续同一笔买入，净值缺失保存待入账且不提前扣现金',async t=>{
+  const {store,bind}=setup(t),original='我买了 2000 的科创50',confirmation='是的 用的现有的人名币进行支付的',question='继续帮我记上';
+  store.setKV('fund_nav:011609',null);
+  const history=[{role:'user',content:original,created_at:now.toISOString()},{role:'assistant',content:'使用现有人民币现金，还是另外投入？'},{role:'user',content:confirmation},{role:'assistant',content:'请核对本次对话已经确认的信息。'},{role:'user',content:'啥意思'},{role:'assistant',content:'之前上下文核对失败，尚未入账。'}];
+  const result=await bind(question,'recover-old-dialogue',{history}).recordHoldingChange({query:'科创',evidence:original,side:'buy',amount:2000,cashSource:'registered',interpretation:{intent:'execute',userTurns:[original,confirmation,'啥意思',question],cashSourceQuote:confirmation}});
+  assert.equal(result.status,'pending');assert.equal(store.ledgerEntries().length,1);assert.equal(store.state().assets[0].value,10000);assert.equal(store.state().assets[1].quantity,100);
+});
+
+test('删除口语共用原话核验，仍保留现金与另一范围的记录',async t=>{
+  const {store,bind}=setup(t),state=store.state();state.fundWatchlist=[{code:'011609',name:'科创基金'}];store.save(state,state.revision);
+  const question='把科创从自选列表拿掉';
+  const result=await bind(question,'semantic-remove').removeInstrument({query:'科创',target:'watchlist',interpretation:{intent:'execute',userTurns:[question]}});
+  assert.equal(result.status,'applied');assert.equal(store.state().fundWatchlist.length,0);assert.equal(store.state().assets.length,2);assert.equal(store.state().assets[0].value,10000);
 });

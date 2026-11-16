@@ -487,6 +487,10 @@ function assetTable(assets,compact=false,filtered=false) {
 let activePriceHistory=null;
 const quotePercent=q=>Number.isFinite(q.previous?.price)&&q.previous.price>0?(q.price-q.previous.price)/q.previous.price*100:null;
 const quoteNumber=value=>value.toLocaleString('zh-CN',{maximumFractionDigits:4});
+function historyReadingHTML(asset,selected,latest) {
+  const pct=quotePercent(selected);
+  return `<div><strong>${quoteNumber(selected.price)} <small>${esc(asset.currency)}</small></strong><span>${esc(selected.date)}${selected===latest?' · 最新记录':''}</span></div><div class="history-daily"><span>当日涨跌</span><b class="${pct===null?'muted':movementClass(pct)}">${pct===null?'—':signed(pct)+'%'}</b></div>`;
+}
 function priceHistoryChartHTML(asset,items,selectedDate='') {
   const rows=items.slice().reverse(),selected=rows.find(q=>q.date===selectedDate)||rows.at(-1),fund=asset.type==='fund';
   if(!selected)return '<div class="history-empty">暂无可绘制的历史数据，连接行情后开始记录。</div>';
@@ -499,11 +503,11 @@ function priceHistoryChartHTML(asset,items,selectedDate='') {
     if(gap)gaps=true;
     segments.push(`<path d="M${x(a)*10} ${y(a)*2}L${x(b)*10} ${y(b)*2}"${gap?' stroke-dasharray="4 5"':''}/>`);
   }
-  const pct=quotePercent(selected),axis=value=>value.toLocaleString('zh-CN',{minimumFractionDigits:high-low<.05?4:2,maximumFractionDigits:high-low<.05?4:2});
-  return `<div class="history-chart-heading"><div><h3>${fund?'单位净值走势':'已保存股价走势'}</h3><p>${rows.length} 条已保存记录 · ${esc(asset.currency)}</p></div><label class="history-date-select"><span>选择日期</span><select data-history-date aria-label="选择记录日期">${items.map(q=>`<option value="${esc(q.date)}"${q.date===selected.date?' selected':''}>${esc(q.date)}</option>`).join('')}</select></label></div>
+  const axis=value=>value.toLocaleString('zh-CN',{minimumFractionDigits:high-low<.05?4:2,maximumFractionDigits:high-low<.05?4:2});
+  return `<div class="history-chart-heading"><div><h3>${fund?'单位净值走势':'已保存股价走势'}</h3><p>${rows.length} 条已保存记录 · ${esc(asset.currency)} · 移动鼠标查看对应日期与${fund?'净值':'价格'}</p></div></div>
     ${!fund?'<p class="history-chart-note">这里是按交易日保存的价格记录；下方「股票行情」可分别查看价格与成交量。</p>':''}
-    <div class="history-reading" aria-live="polite"><div><strong>${quoteNumber(selected.price)} <small>${esc(asset.currency)}</small></strong><span>${esc(selected.date)}${selected===rows.at(-1)?' · 最新记录':''}</span></div><div class="history-daily"><span>当日涨跌</span><b class="${pct===null?'muted':movementClass(pct)}">${pct===null?'—':signed(pct)+'%'}</b></div></div>
-    <div class="trend-chart price-history-chart"><div class="trend-y-axis"><span>${axis(high)}</span><span>${axis((high+low)/2)}</span><span>${axis(low)}</span></div><div class="trend-plot"><svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path class="trend-grid" d="M0 0H1000M0 100H1000M0 200H1000"/><path class="history-guide" d="M${x(selected)*10} 0V200"/><g class="trend-line">${segments.join('')}</g></svg>${rows.map(q=>`<button type="button" class="trend-dot history-point ${q===selected?'selected':''}" style="left:${x(q)}%;top:${y(q)}%" data-action="history-point" data-date="${esc(q.date)}" aria-pressed="${q===selected}" aria-label="${esc(q.date)}，${fund?'单位净值':'股价'} ${quoteNumber(q.price)} ${esc(asset.currency)}" title="${esc(q.date)} · ${quoteNumber(q.price)} ${esc(asset.currency)}"></button>`).join('')}<div class="trend-x-axis"><span>${esc(rows[0].date)}</span>${rows.length>1?`<span>${esc(rows.at(-1).date)}</span>`:''}</div></div></div>
+    <div class="history-reading" data-history-reading aria-live="polite">${historyReadingHTML(asset,selected,rows.at(-1))}</div>
+    <div class="trend-chart price-history-chart"><div class="trend-y-axis"><span>${axis(high)}</span><span>${axis((high+low)/2)}</span><span>${axis(low)}</span></div><div class="trend-plot" data-history-plot><svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path class="trend-grid" d="M0 0H1000M0 100H1000M0 200H1000"/><path class="history-guide" d="M${x(selected)*10} 0V200"/><g class="trend-line">${segments.join('')}</g></svg>${rows.map(q=>`<button type="button" class="trend-dot history-point ${q===selected?'selected':''}" style="left:${x(q)}%;top:${y(q)}%" data-action="history-point" data-history-x="${x(q)}" data-date="${esc(q.date)}" aria-pressed="${q===selected}" aria-label="${esc(q.date)}，${fund?'单位净值':'股价'} ${quoteNumber(q.price)} ${esc(asset.currency)}"></button>`).join('')}<div class="trend-x-axis"><span>${esc(rows[0].date)}</span>${rows.length>1?`<span>${esc(rows.at(-1).date)}</span>`:''}</div><span class="history-cursor-date" data-history-cursor-date hidden></span></div></div>
     <p class="history-chart-note">${rows.length===1?'目前只有 1 条记录，积累更多数据后显示连线。':gaps?'虚线表示日期间隔（含休市），不补齐中间数据。':'仅连接已保存的记录。'}${fund?'单位净值未计现金分红。':'股价未复权。'}</p>`;
 }
 function instrumentBasicsHTML(asset,details) {
@@ -527,9 +531,19 @@ async function loadInstrumentDetails(view) {
   if(activePriceHistory===view&&$('#dialog').open&&$('#instrument-basics'))$('#instrument-basics').innerHTML=instrumentBasicsHTML(view.asset,details);
 }
 function selectHistoryDate(date) {
-  const view=activePriceHistory;if(!view||!view.items.some(q=>q.date===date))return;
+  const view=activePriceHistory,selected=view?.items.find(q=>q.date===date);
+  if(!selected||view.selectedDate===date)return;
   view.selectedDate=date;
-  $('#price-history-chart').innerHTML=priceHistoryChartHTML(view.asset,view.items,date);
+  $('[data-history-reading]').innerHTML=historyReadingHTML(view.asset,selected,view.items[0]);
+  for(const point of $('#price-history-chart').querySelectorAll('.history-point')) {
+    const active=point.dataset.date===date;
+    point.classList.toggle('selected',active);point.setAttribute('aria-pressed',String(active));
+    if(!active)continue;
+    const x=Number(point.dataset.historyX),cursor=$('[data-history-cursor-date]');
+    $('#price-history-chart .history-guide').setAttribute('d',`M${x*10} 0V200`);
+    cursor.textContent=date;cursor.hidden=false;cursor.style.left=x+'%';
+    cursor.style.transform=x<15?'none':x>85?'translateX(-100%)':'translateX(-50%)';
+  }
 }
 function referenceChartSelection(view,chart) {
   const series=view?.referenceMode==='daily'?view?.referenceData?.history:view?.referenceData?.intraday,points=series?.points||[],field=chart==='volume'?'referenceVolumePoint':'referencePoint';
@@ -1010,6 +1024,18 @@ document.addEventListener('load',event=>{
   if(event.target.matches?.('.watchboard-logo > img'))event.target.parentElement.classList.add('has-logo');
 },true);
 document.addEventListener('pointermove',event=>{
+  const plot=event.target.closest?.('[data-history-plot]');
+  if(plot) {
+    const bounds=plot.getBoundingClientRect();if(!bounds.width)return;
+    const x=(event.clientX-bounds.left)/bounds.width*100;
+    let nearest=null,distance=Infinity;
+    for(const point of plot.querySelectorAll('.history-point')) {
+      const delta=Math.abs(Number(point.dataset.historyX)-x);
+      if(delta<distance){nearest=point;distance=delta;}
+    }
+    if(nearest)selectHistoryDate(nearest.dataset.date);
+    return;
+  }
   const target=event.target.closest?.('[data-reference-hover] [data-action="fund-reference-point"]');
   if(!target||!activePriceHistory||activePriceHistory.referencePointerIndex===target.dataset.index)return;
   activePriceHistory.referencePointerIndex=target.dataset.index;
@@ -1204,7 +1230,6 @@ document.addEventListener('input',event=>{rememberFormDraft(event);if(event.targ
 document.addEventListener('change',event=>{
   rememberFormDraft(event);
   if(event.target.matches('[data-fund-reference-select]')){selectReferencePoint(event.target.dataset.chart,Number(event.target.value),'select');return;}
-  if(event.target.matches('[data-history-date]')){selectHistoryDate(event.target.value);$('[data-history-date]')?.focus?.();return;}
   if(event.target.matches('#asset-form [name=costMode]')){const draft=readAssetDraft();draft.costEntryAmount=null;draft.costPanelOpen=true;assetDialog(draft.id,draft);}
 
   if(event.target.matches('#asset-form [name=autoPrice]')){const draft=readAssetDraft();assetDialog(draft.id,draft);}

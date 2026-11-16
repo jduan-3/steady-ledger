@@ -49,7 +49,8 @@ test('入账后回答失败会保留凭据，跨重启重发或继续只恢复�
 
 test('部分卖出成功与买入待补答分别保存状态，重启后只完成买入',async t=>{
  const f=fixture(t),question='我卖出科创100份，买入南方200份，每份成交价2元';let requests=0;
- t.mock.method(globalThis,'fetch',async()=>{
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+   if(JSON.parse(body).tool_choice==='none')return reply({content:'科创基金已入账；南方尚未入账，这笔是用现有现金还是额外投入？如日期未明确，请补充实际日期。'});
   requests++;
   if(requests===1)return reply({content:null,tool_calls:[call('sale','record_holding_change',{query:'科创',evidence:question,side:'sell',quantity:100,price:2}),call('buy','record_holding_change',{query:'南方',evidence:question,side:'buy',quantity:200,price:2})]});
   if(requests===2)return reply({content:null,tool_calls:[call('continue-buy','record_holding_change',{query:'南方',evidence:question+'；现有现金',side:'buy',quantity:200,price:2,cashSource:'registered'})]});
@@ -80,7 +81,7 @@ test('100份被模型填为amount时自动修正，缺失的资金来源仍只�
  const result=await(await f.runtime.start(question,'units',null)).promise;
  assert.equal(result.toolCalls[0].output.quantity,100);assert.equal(result.toolCalls[0].output.amount,200);assert.equal(f.store.state().assets[0].value,9800);assert.equal(requests,2);
  const missing='买入100份科创，每份成交价2元';
- t.mock.method(globalThis,'fetch',async()=>reply({content:null,tool_calls:[call('missing-source','record_holding_change',{query:'科创',evidence:missing,side:'buy',quantity:100,price:2})]}));
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>JSON.parse(body).tool_choice==='none'?reply({content:'这笔使用现有现金还是额外投入？'}):reply({content:null,tool_calls:[call('missing-source','record_holding_change',{query:'科创',evidence:missing,side:'buy',quantity:100,price:2})]}));
  const answer=await(await f.runtime.start(missing,'missing-source',null)).promise;
  assert.equal(answer.toolCalls[0].output.requiresUserInput,true);assert.match(answer.content,/现有现金.*额外投入/);assert.equal(f.store.ledgerEntries().length,1);
 });
@@ -96,7 +97,8 @@ test('同一句无法分离的多标的不写账，自动纠正不绕过否定�
 test('补答入账后回答失败，继续保留已确认的资金来源和原交易日期',async t=>{
  const f=fixture(t),question='我在2026-10-29买入科创100份，每份成交价2元';let requests=0;
  const args={query:'科创',evidence:question,side:'buy',quantity:100,price:2};
- t.mock.method(globalThis,'fetch',async()=>{
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+   if(JSON.parse(body).tool_choice==='none')return reply({content:'科创基金已入账；南方尚未入账，这笔是用现有现金还是额外投入？如日期未明确，请补充实际日期。'});
   requests++;
   if([1,2,4].includes(requests))return reply({content:null,tool_calls:[call('buy','record_holding_change',args)]});
   if(requests===3)return new Response('synthetic failure',{status:503});
@@ -159,7 +161,8 @@ test('入账提交与工具结果保存之间重启，凭据与草稿恢复后�
 test('多笔交易的现金与日期短答继续使用原操作身份',async t=>{
  for(const [question,answer] of [['我卖出科创100份，买入南方200份，每份成交价2元','现金'],['我卖出科创100份，前几天买入南方200份，用现有现金，每份成交价2元','今天买入的']])await t.test(answer,async t=>{
   const f=fixture(t);let requests=0;
-  t.mock.method(globalThis,'fetch',async()=>{
+  t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+   if(JSON.parse(body).tool_choice==='none')return reply({content:'科创基金已入账；南方尚未入账，这笔是用现有现金还是额外投入？如日期未明确，请补充实际日期。'});
    if(++requests===1)return reply({content:null,tool_calls:[call('sell','record_holding_change',{query:'科创',evidence:question,side:'sell',quantity:100,price:2}),call('buy','record_holding_change',{query:'南方',evidence:question,side:'buy',quantity:200,price:2})]});
    if(requests===2)return reply({content:null,tool_calls:[call('buy-follow-up','record_holding_change',{query:'南方',evidence:question,side:'buy',quantity:200,price:2})]});
    return reply({content:'已完成剩余记录。'});
@@ -168,4 +171,43 @@ test('多笔交易的现金与日期短答继续使用原操作身份',async t=>
   const result=await(await f.runtime.start(answer,'short-answer',first.meta.conversationId)).promise;
   assert.equal(result.toolCalls[0].output.status,'applied');assert.equal(f.store.ledgerEntries().length,2);assert.ok(f.store.ledgerEntries().every(e=>e.requestId==='two-trades'));
  });
+});
+
+test('真实科创对话经模型结构化理解入账，随后问啥意思只解释',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-16T10:00:00Z')});
+ const f=fixture(t),original='我买了 2000 的科创50',confirmation='是的 用的现有的人名币进行支付的';
+ // Use an existing official-date cache; no live model or market requests.
+ const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ f.store.setKV('fund_nav:011609',{date:day,price:2,basis:'unit_nav',currency:'CNY'});
+ let requests=0;
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+  const payload=JSON.parse(body);requests++;
+  if(requests===1)return reply({content:'你买的是已有的科创基金吗？这笔钱是用现有人民币现金支付，还是另外从外部投入的资金？'});
+  if(requests===2){
+   const tool=payload.tools.find(t=>t.function.name==='record_holding_change');assert.ok(tool.function.parameters.properties.interpretation);
+   assert.match(payload.messages[0].content,/语言理解由你负责/);
+   return reply({content:null,tool_calls:[call('semantic-buy','record_holding_change',{query:'科创',side:'buy',amount:2000,cashSource:'registered',evidence:original,interpretation:{intent:'execute',userTurns:[original,confirmation],cashSourceQuote:confirmation}})]});
+  }
+  if(requests===3)return reply({content:'已记录买入2000元，从现有人民币现金扣除。'});
+  assert.match(payload.messages[0].content,/直接回答，不重新调用写入工具/);
+  return reply({content:'意思是买入金额已经从原有现金转入科创基金，没有新增一笔外部收入。'});
+ });
+ const first=await f.runtime.start(original,'semantic-first',null);await first.promise;
+ const result=await(await f.runtime.start(confirmation,'semantic-confirmation',first.meta.conversationId)).promise;
+ assert.equal(result.toolCalls[0].output.status,'applied');assert.equal(f.store.state().assets[0].value,8000);assert.equal(f.store.state().assets[1].quantity,2000);
+ const explanation=await(await f.runtime.start('啥意思','semantic-explain',first.meta.conversationId)).promise;
+ assert.equal(explanation.toolCalls.length,0);assert.match(explanation.content,/没有新增/);assert.equal(f.store.ledgerEntries().length,1);
+});
+
+test('缺信息时保留模型解释而非覆盖成工具问句，最终解释禁止继续写入',async t=>{
+ const f=fixture(t),question='买入科创100份，每份成交价2元';let requests=0;
+ const explanation='已确认你买入科创100份；还没入账，只差确认这200元使用原有现金还是另外投入。';
+ t.mock.method(globalThis,'fetch',async(_url,{body})=>{
+  const payload=JSON.parse(body);
+  if(++requests===1)return reply({content:null,tool_calls:[call('missing','record_holding_change',{query:'科创',evidence:question,side:'buy',quantity:100,price:2,interpretation:{intent:'execute',userTurns:[question]}})]});
+  assert.equal(payload.tool_choice,'none');assert.equal(payload.tools,undefined);assert.ok(payload.messages.some(m=>m.role==='tool'&&m.content.includes('needs_information')));
+  return reply({content:explanation});
+ });
+ const result=await(await f.runtime.start(question,'natural-clarification',null)).promise;
+ assert.equal(requests,2);assert.equal(result.content,explanation);assert.equal(f.store.ledgerEntries().length,0);
 });
