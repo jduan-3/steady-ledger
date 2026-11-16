@@ -11,7 +11,7 @@ import {BUFFETT_SERIES} from '../src/buffett.mjs';
 const now=new Date('2026-10-25T09:00:00Z'),def=MARKET_SERIES[0];
 function setup(t){const dir=mkdtempSync(join(tmpdir(),'steady-markets-')),s=openStore(dir);t.after(()=>{s.close();rmSync(dir,{recursive:true,force:true});});return s;}
 function quote(key,price=110,previous=100,time='2026-10-23 16:01:00'){return {key,price,previous:{price:previous},time};}
-function wire(code,symbol,price=110,previous=100,time='2026-10-23 16:01:00') {const f=Array(33).fill('');f[2]=symbol;f[3]=String(price);f[4]=String(previous);f[30]=time;return `v_${code}="${f.join('~')}";`;}
+function wire(code,symbol,price=110,previous=100,time='2026-10-23 16:01:00',values={}) {const f=Array(38).fill('');f[2]=symbol;f[3]=String(price);f[4]=String(previous);f[30]=time;Object.assign(f,values);return `v_${code}="${f.join('~')}";`;}
 function dataFetch(overrides={}){return async url=>{
  if(url.includes('cnn.io'))return new Response('Restricted',{status:418});
  if(url.includes('qt.gtimg'))return new Response(overrides.text||wire('us.INX','.INX'));
@@ -24,6 +24,18 @@ test('index identities, timestamps and positive prices are validated; missing pr
  assert.throws(()=>normalizeMarketQuote(quote(def.key,110,100,'2026-10-26 16:00:00'),def,now));
  assert.equal(normalizeMarketQuote(quote(def.key,110,100,'2026-10-23 16:01:00.123'),def,now).time,'2026-10-23 16:01:00');
  assert.equal(parseMarketHistory({code:0,data:{'us.INX':{day:[['2026-10-23','100','110']]}}},def,now)[0].previous,null);
+});
+test('public live fallback keeps ETF volume and turnover instead of displaying an old closing volume',async t=>{
+ const s=setup(t),current=new Date('2026-11-13T05:48:49Z'),key='HK.02800';
+ s.setKV('markets_snapshot',{histories:{[key]:[{key,date:'2026-11-12',price:24.1,volume:100,turnover:2410}]}});
+ const text=wire('hk02800','02800',23.82,24.1,'2026/11/13 13:33:00',{6:'205877217',37:'4934116267'});
+ await refreshMarketOverview(s,{now:current,live:true,market:'HK',provider:async()=>{throw new Error('unavailable');},fetchImpl:async()=>new Response(text)});
+ const row=marketOverview(s,'HK',current).activity.find(r=>r.key===key);
+ assert.equal(row.latest.volume,205877217);assert.equal(row.latest.turnover,4934116267);assert.equal(row.latest.date,'2026-11-13');assert.equal(row.closed.date,'2026-11-12');
+ for(const [values,expected] of [[{6:'0',37:'0'},0],[{6:'',37:''},undefined],[{6:'-1',37:'-1'},undefined]]){
+  const q=parseMarketQuotes(wire('hk02800','02800',23.82,24.1,'2026/11/13 13:33:00',values),current).find(q=>q.key===key);
+  assert.equal(q.volume,expected);assert.equal(q.turnover,expected);
+ }
 });
 test('Cboe VIX 只接收有效且已收盘的日期，排序去重，保留真实前收并拒绝错误格式',()=>{
  const csv='DATE,OPEN,HIGH,LOW,CLOSE\n10/23/2026,20,21,18,19.42\n10/22/2026,20,21,18,18\n10/23/2026,20,21,18,19.45\n10/26/2026,20,21,18,20\n02/30/2026,1,1,1,1\n10/21/2026,0,0,0,0';

@@ -50,6 +50,16 @@ test('daily reference uses unadjusted OHLC and source volume, labels unfinished 
   assert.throws(()=>parseReferenceHistory(history([history().data.sh588080.day[0],history().data.sh588080.day[0]]),key,now));
   assert.throws(()=>parseReferenceHistory(history([['2026-10-30','1.1','1.2','1.0','1.1','10']]),key,now));
 });
+test('ETF automatic refresh accepts current-day minutes while deferring only the unfinished next-minute bucket',async t=>{
+  const store=setup(t),current=new Date('2026-11-13T05:48:49Z'),input=minutes(['1347 1.1 2 220','1348 1.2 5 580','1349 1.2 10 1180']);input.data.sh588080.data.date='20261113';
+  store.setKV('fund_reference:'+key,{attemptedAt:'2026-11-12T05:48:49Z',intraday:{date:'2026-11-04',points:[{time:'10:22',price:1.2,volume:1}]},errors:{intraday:'更新失败'}});
+  const before=store.state({raw:true}),fetchImpl=async url=>new Response(url.includes('/q=')?wire({30:'20261113134800'}):JSON.stringify(url.includes('/minute/')?input:history()));
+  const first=await refreshFundReference(store,'fund',{now:current,fetchImpl});
+  assert.equal(first.intraday.date,'2026-11-13');assert.deepEqual(first.intraday.points.map(p=>p.time),['13:47','13:48']);assert.equal(first.intraday.points.at(-1).cumulativeVolume,500);assert.equal(first.errors.intraday,undefined);
+  const second=await refreshFundReference(store,'fund',{now:new Date(current.getTime()+61000),fetchImpl});
+  assert.equal(second.intraday.points.at(-1).time,'13:49');assert.equal(second.intraday.points.at(-1).volume,500);assert.deepEqual(store.state({raw:true}),before);
+  const invalid=structuredClone(input);invalid.data.sh588080.data.data.push('1350 1.2 11 1200');assert.throws(()=>parseReferenceMinutes(invalid,key,current));
+});
 test('parallel refreshes share requests, cache for a minute and leave NAV, ledger, revision, history and audit untouched',async t=>{
   const store=setup(t),before=store.state({raw:true}),audit=store.audit(),savedHistory=store.history();let calls=0;
   store.setKV('fund_nav:011609',{date:'2026-10-30',price:0.9,basis:'unit_nav',currency:'CNY'});

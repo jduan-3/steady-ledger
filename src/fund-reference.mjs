@@ -38,11 +38,15 @@ export function parseReferenceMinutes(input,key,now=new Date()) {
   const date=isoDay(wire.date.replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'));
   if(date>marketDay('SH',now))throw new Error('参考分时日期无效');
   const points=[];let lastTime='',previousVolume=0,previousAmount=0;
-  for(const line of wire.data){
+  for(const [index,line] of wire.data.entries()){
     const [stamp,rawPrice,rawVolume,rawAmount]=String(line).trim().split(/\s+/),price=positive(rawPrice),lots=nonnegative(rawVolume),amount=nonnegative(rawAmount);
     if(!/^(?:09[0-5]\d|1[0-5][0-5]\d)$/.test(stamp)||stamp<=lastTime||price==null||lots==null||lots*100<previousVolume||amount!=null&&previousAmount!=null&&amount<previousAmount)throw new Error('参考分时价格、时间或累计量无效');
     const time=stamp.slice(0,2)+':'+stamp.slice(2),volume=lots*100;
-    if(date===marketDay('SH',now)&&time>localTime(now))throw new Error('参考分时时点晚于当前时间');
+    if(date===marketDay('SH',now)&&time>localTime(now)){
+      // The last CN/HK minute bucket can be labelled with the next minute.
+      if(index===wire.data.length-1&&time===localTime(new Date(now.getTime()+60000)))continue;
+      throw new Error('参考分时时点晚于当前时间');
+    }
     points.push({time,price,volume:volume-previousVolume,amount:amount==null||previousAmount==null?null:amount-previousAmount,cumulativeVolume:volume,cumulativeAmount:amount});
     lastTime=stamp;previousVolume=volume;previousAmount=amount;
   }

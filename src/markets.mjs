@@ -69,7 +69,7 @@ export function parseMarketQuotes(text,now=new Date(),defs=MARKET_SERIES) {
     const f=match[2].split('~'),expected=def.code.slice(2);
     if(canonicalUS(f[2])!==expected.toUpperCase())continue;
     let time=f[30]?.replaceAll('/','-');if(/^\d{14}$/.test(time))time=time.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/,'$1-$2-$3 $4:$5:$6');
-    try{out.push(normalizeMarketQuote({key:def.key,price:f[3],previous:{price:f[4]},time},def,now,'腾讯证券公开行情'));}catch{}
+    try{out.push(normalizeMarketQuote({key:def.key,price:f[3],previous:{price:f[4]},time,volume:f[6],turnover:f[37]},def,now,'腾讯证券公开行情'));}catch{}
   }
   return out;
 }

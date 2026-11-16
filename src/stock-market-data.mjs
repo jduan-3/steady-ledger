@@ -40,11 +40,16 @@ export function parseStockMarketMinutes(input,key,code=codeFor(key),now=new Date
   if(!Array.isArray(wire?.data))throw new Error('股票分时格式无效');
   const date=isoDay(wire.date);if(date>today)throw new Error('股票分时日期无效');
   const points=[];let previousTime='',previousVolume=0,previousAmount=0,volumeDecreases=0,amountDecreases=0;
-  for(const line of wire.data){
+  for(const [index,line] of wire.data.entries()){
     const [stamp,rawPrice,rawVolume,rawAmount]=String(line).trim().split(/\s+/),price=positive(rawPrice),volume=nonnegative(rawVolume),amount=nonnegative(rawAmount);
     if(!/^(?:[01]\d|2[0-3])[0-5]\d$/.test(stamp)||stamp<=previousTime||price==null||volume==null)throw new Error('股票分时时点、价格或成交量无效');
     const time=stamp.slice(0,2)+':'+stamp.slice(2),cumulativeVolume=volume*(['SH','SZ'].includes(s.market)?100:1);
-    if(date===today&&time>clock.slice(0,5))throw new Error('股票分时时间无效');
+    if(date===today&&time>clock.slice(0,5)){
+      // Tencent CN/HK appends the unfinished bucket with the next minute's label.
+      // Keep the current day's valid points; wait for this last bucket to finish.
+      if(s.market!=='US'&&index===wire.data.length-1&&time===localTime(s.market,new Date(now.getTime()+60000)).slice(0,5))continue;
+      throw new Error('股票分时时间无效');
+    }
     if(s.market==='US'&&(time<'09:30'||time>sessionClose('US',date,calendars)))throw new Error('美股分时包含非普通交易时段');
     const volumeDecrease=cumulativeVolume<previousVolume,amountDecrease=amount!=null&&previousAmount!=null&&amount<previousAmount;
     if(volumeDecrease)volumeDecreases++;if(amountDecrease)amountDecreases++;

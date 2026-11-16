@@ -63,6 +63,27 @@ test('US minute and day timestamps handle daylight saving and calendar half-days
   assert.equal(parseStockMarketHistory(history(),'US.GOOG','usGOOG.OQ',new Date('2026-10-30T17:15:00Z'),calendars).points.at(-1).status,'complete');
   assert.equal(parseStockMarketHistory(history(),'US.GOOG','usGOOG.OQ',new Date('2026-10-30T17:15:00Z')).points.at(-1).status,'partial');
 });
+test('CN/HK next-minute trailing buckets do not freeze the valid intraday volume series',()=>{
+  const current=new Date('2026-11-13T05:48:49Z'),rows=['1347 110 2 220','1348 120 5 580','1349 120 10 1180'];
+  for(const key of ['SH.601318','SZ.000001','HK.00700']){
+    const input=minutes(key,rows,'20261113'),series=parseStockMarketMinutes(input,key,code(key),current);
+    assert.equal(series.date,'2026-11-13');assert.deepEqual(series.points.map(p=>p.time),['13:47','13:48']);
+    assert.equal(series.points.at(-1).cumulativeVolume,key.startsWith('HK.')?5:500);
+    assert.equal(parseStockMarketMinutes(input,key,code(key),new Date(current.getTime()+60000)).points.at(-1).time,'13:49');
+    assert.throws(()=>parseStockMarketMinutes(minutes(key,[...rows,'1350 120 11'],'20261113'),key,code(key),current));
+    assert.throws(()=>parseStockMarketMinutes(minutes(key,['1349 120 10'],'20261113'),key,code(key),current));
+  }
+});
+test('successive automatic refreshes replace stale CN/HK volume caches without changing the ledger',async t=>{
+  const store=setup(t),state=store.state({raw:true});Object.assign(state.assets[0],{currency:'HKD',security:security({market:'HK',symbol:'00700'})});state.assets[0].costBasis.currency='HKD';store.save(state,state.revision);
+  const current=new Date('2026-11-13T05:48:49Z'),input=minutes('HK.00700',['1347 110 2','1348 120 5','1349 120 10'],'20261113');
+  store.setKV('stock_market_data:HK.00700',{attemptedAt:'2026-11-12T05:48:49Z',intraday:{date:'2026-10-30',points:[{time:'16:00',price:120,volume:1}]},errors:{intraday:'更新失败'}});
+  const before=store.state({raw:true}),fetchImpl=async url=>new Response(url.includes('/q=')?wire('HK.00700',{30:'20261113133300'}):JSON.stringify(url.includes('/minute/')?input:history('HK.00700')));
+  const first=await refreshStockMarketData(store,'stock',{now:current,fetchImpl});
+  assert.equal(first.intraday.date,'2026-11-13');assert.equal(first.intraday.points.at(-1).time,'13:48');assert.equal(first.errors.intraday,undefined);
+  const second=await refreshStockMarketData(store,'stock',{now:new Date(current.getTime()+61000),fetchImpl});
+  assert.equal(second.intraday.points.at(-1).time,'13:49');assert.deepEqual(store.state({raw:true}),before);
+});
 test('unadjusted daily bars validate OHLC, dates, identity and market volume units',()=>{
   for(const key of ['SH.601318','HK.00700','US.GOOG']){const series=parseStockMarketHistory(history(key),key,key==='US.GOOG'?'usGOOG.OQ':code(key),now);assert.equal(series.basis,'unadjusted');assert.equal(series.points.at(-1).volume,key.startsWith('SH.')?1000:10);}
   assert.throws(()=>parseStockMarketHistory({code:0,data:{'usGOOG.OQ':{qfqday:history().data['usGOOG.OQ'].day}}},'US.GOOG','usGOOG.OQ',now));

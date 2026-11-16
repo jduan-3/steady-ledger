@@ -367,6 +367,20 @@ test('港股每五秒检查，美股每十秒，隐藏或编辑时暂停，切�
  h.run("route='dashboard';location.hash='#dashboard'");await timers[0].callback();await timers[1].callback();assert.equal(requests.length,3);
 });
 
+test('股票详情每分钟自动更新成交量，切回立即检查，关闭或隐藏时暂停',async()=>{
+ const timers=[],requests=[],reference={instrument:{market:'HK',key:'HK.00700',currency:'HKD',marketLabel:'港股',name:'Synthetic'},intraday:{date:'2026-11-13',points:[{time:'13:48',price:120,volume:5}]},errors:{}};
+ const h=componentHarness(async url=>{requests.push(url);return Response.json(reference);});
+ h.context.setTimeout=(callback,delay)=>{timers.push({callback,delay});return timers.length;};
+ h.context.view={asset:{id:'stock',type:'stock'},referenceData:reference,referenceMode:'intraday'};
+ h.run("$('#dialog').open=true;activePriceHistory=view;scheduleFundReference(view)");
+ assert.equal(timers.at(-1).delay,60000);
+ await timers.at(-1).callback();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(requests,['/api/market/stock-data/refresh']);
+ h.context.document.visibilityState='hidden';await timers.at(-1).callback();assert.equal(requests.length,1);
+ h.context.document.visibilityState='visible';h.listeners.visibilitychange();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,2);
+ h.run("$('#dialog').open=false;scheduleFundReference(view)");const count=timers.length;
+ h.run('scheduleFundReference(view)');assert.equal(timers.length,count);
+});
 test('每只股票占比按全部直接股票的人民币估值计算，包含池外股票，排除基金和现金',()=>{
  const h=componentHarness();h.run(`data.state.preferences.rates={CNY:1,HKD:.9,USD:7};data.state.assets=[
   {id:'cn',name:'人民币股票',type:'stock',currency:'CNY',value:1000,inPool:true,costBasis:{amount:99999}},
